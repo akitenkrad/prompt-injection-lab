@@ -1,0 +1,36 @@
+**English** | [日本語](architecture.ja.md)
+
+# Architecture
+
+The workspace is a set of `pil-*` crates (`pil-` = **p**rompt-**i**njection-**l**ab). Fourteen crates make up the current tree; the Phase 2 crates are marked below.
+
+| crate | role | Phase 2 |
+|---|---|---|
+| `pil-core` | Core type definitions. `SourceRef` (the identity unit `(repo, commit, path, row)`), `Case` (with `target: Option<String>` typing AdvBench's double-packing), `EnvKind`, the three-valued `Verdict`, `InstrumentRef` + `MeasurementParams`, `Measurement`, and `Trial` (one generation carrying multiple measurements via `measurements: Vec<Measurement>`), plus `AttackRef` + `Transform`. | |
+| `pil-llm` | Provider abstraction (independent implementation). `LlmConfig`, `CallMetadata` (records what each call talked to), a cache keyed on `hash(rendered_prompt + model + params + attempt + seed)` so multi-trial does not collapse to one entry, and `top_logprobs` exposure. Ollama default, with OpenAI / Anthropic / Gemini feature-gated. | |
+| `pil-metrics` | Split three ways internally. `instrument` (judge one case at a time: string-match / LLM-generation judge / LLM-logprob judge / hash-match), `aggregate` (ASR, confidence intervals, union coverage, multi-trial ASR, enforcing comparability by `EnvKind` / `InstrumentRef`), and `reliability` (measures the judge's own recall and FPR — first-class). | |
+| `pil-bench-advbench` | AdvBench loader (original `llm-attacks`, `goal,target` schema, 520 items). | |
+| `pil-bench-harmbench` | HarmBench loader (per-file 5–9 column variable schema, Tags split on `", "`, MinHash Jaccard copyright detection, cls template selection). | |
+| `pil-bench-strongreject` | StrongREJECT loader plus **both rubric v1 and v2 reimplemented natively in Rust** (to measure the judgment difference on the same response). | |
+| `pil-bench-jbb` | JBB loader (harmful 100 + benign 100 + `judge-comparison.csv` 300). | |
+| `pil-bench-agentdojo` | AgentDojo native-first adapter — case types, provenance (`EnvKind::Emulated`), result-JSON parsing, and enumeration ingest for AgentDojo v0.1.35. The environment, tools, and scoring stay in Python; only the "does not change the measurement" layer is in Rust. | ● |
+| `pil-attacks` | `AttackRef` transform renderer (Identity / Base64 / Leetspeak / Translate / Roleplay / RefusalSuppression). **Reproduces published methods only** — no new attacks — and stamps reproduction provenance via `source: Option<SourceRef>`. | |
+| `pil-runner` | Multi-trial, bounded concurrency (semaphore), token-bucket rate control (429 honours `Retry-After` + exponential backoff), and resume-from-interrupt (append-only JSONL keyed on `(CaseId, instrument, attempt, seed)`, skipping completed tuples on restart, atomic write/rename for idempotency). | |
+| `pil-report` | Aggregation from run artifacts: confidence intervals with undecidable counts, union coverage, multi-trial ASR, over-refusal, and automatic non-independence detection via `ContentKey`. | |
+| `pil-shim` | OpenAI-compatible local shim (control inversion). Serves an OpenAI-compatible endpoint so an external Python bench can point its `base_url` at it; the pure OpenAI ⇄ `pil-llm` request/response mapping is feature-independent and unit-testable, and the HTTP server (axum/tokio) is behind the `shim` feature. | ● |
+| `pil-sidecar` | Python-sidecar launch plumbing (native-first). Concentrates the "glue that does not change the measurement" in Rust — process launch, env-var injection, I/O normalization, provenance — while the Python side stays a thin shell. Injects the shim's `base_url` as `OPENAI_BASE_URL` (and a dummy `OPENAI_API_KEY`) to route Python's OpenAI-compatible client through the single `pil-llm` path; the actual process launch is behind the `sidecar` feature. | ● |
+| `pil-cli` | The `pil` binary (`reliability` / `run` / `report`). | |
+
+Upstream loaders are held in native Rust; the upstream Python loaders (which hard-code raw-URL fetches from a `main` branch or a personal account) are never invoked. This makes SHA-pinning effective — "which SHA, which row" is guaranteed for every `Case`. Reading, normalizing, and stamping `SourceRef` is glue: putting it in Rust does not change the measured value.
+
+## Control inversion (Phase 2)
+
+When Phase 2 takes in environment-typed benchmarks (such as AgentDojo), building a sidecar the naive way produces "Rust calls Python, and Python calls the model itself." That splits model calls into **two paths**, so temperature, seed, retry, and metadata recording no longer line up — the comparability breakdown recurs inside the repository.
+
+So control is inverted: the **Rust `pil-shim` process serves an OpenAI-compatible local endpoint, and the Python bench points its `base_url` there.** The sidecar (`pil-sidecar`) holds only the environment and tool execution; every model call returns to Rust and funnels through the single `pil-llm` path, where temperature / seed / cache / metadata / rate-limit are shared across all paths. Because Ollama is itself OpenAI-compatible, this route is already well-trodden.
+
+**Native-first** — the Python sidecar keeps only the irreducible part (an environment or tool body that, if rewritten in Rust, would make it "our reimplementation" rather than "the same benchmark"). Everything else — process wiring, IPC, the OpenAI-compatible shim, tool-calling schema translation, I/O normalization, serialization, cache, rate-limit, metadata, and error/retry control — is concentrated in native Rust, because writing it on the Python side would split control again. The test is whether moving it to Rust could change the measured value: if it could, keep it in Python; if not, move it to Rust. In Phase 1 this endpoint is not needed (native adapters only), but the `pil-llm` API is shaped so the shim can be added later.
+
+## `EnvKind` as comparability metadata
+
+`EnvKind` (`StaticPrompt` / `Emulated` / `RealExecutable`) is first-class metadata: it is the scientific property that decides whether two scores may be compared at all. It is distinct from adapter kind (`native` / `sidecar`), which is only an implementation detail. `pil-bench-agentdojo` cases carry `EnvKind::Emulated`, and the aggregation API compares scores only within the same `EnvKind`.

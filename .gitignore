@@ -12,9 +12,14 @@ Cargo.lock.orig
 # 実行成果物（provenance 同梱・タイムスタンプ付き）
 /results/
 
-# LLM 応答キャッシュ（有害応答を含みうるため公開しない — DESIGN §1.4）
+# LLM 応答キャッシュ（有害応答を含みうるため公開しない）
 /.cache/
 /cache/
+
+# 設計・計画ドキュメント（ローカル参照のみ，git 非追跡．詳細は docs/ に反映）
+/DESIGN.md
+/IMPLEMENTATION_PLAN.md
+/thoughts/
 
 # スクラッチ
 /scratch_*.sh
