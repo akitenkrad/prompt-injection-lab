@@ -12,6 +12,7 @@ members = [
     "crates/pil-runner",
     "crates/pil-report",
     "crates/pil-shim",
+    "crates/pil-sidecar",
     "crates/pil-cli",
 ]
 
@@ -36,6 +37,7 @@ pil-attacks = { path = "crates/pil-attacks" }
 pil-runner = { path = "crates/pil-runner" }
 pil-report = { path = "crates/pil-report" }
 pil-shim = { path = "crates/pil-shim" }
+pil-sidecar = { path = "crates/pil-sidecar" }
 
 # シリアライズ
 serde = { version = "1", features = ["derive"] }

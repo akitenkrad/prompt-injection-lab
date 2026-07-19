@@ -1,0 +1,28 @@
+[package]
+name = "pil-sidecar"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "prompt-injection-lab: Python sidecar 起動基盤．モデル呼び出しをシム経由で pil-llm 単一経路へ戻す (§4.1 native-first)．プロセス制御は feature gate・既定は network-free"
+
+[features]
+# 既定は network-free (§4.1 / §6.1)．config/provenance の純データ型のみを含み，
+# プロセス起動 (tokio::process) は feature `sidecar` でのみ導入する．既定ビルドは tokio を一切参照しない．
+default = []
+sidecar = ["dep:tokio", "dep:thiserror", "tokio/process", "tokio/time"]
+
+[dependencies]
+serde.workspace = true
+tokio = { workspace = true, optional = true }
+thiserror = { workspace = true, optional = true }
+
+[dev-dependencies]
+# funnel 統合テスト (feature `sidecar`) 用．シムを背後に据えて Python の呼び出しを pil-llm へ funnel する．
+# dev-dependencies なので `cargo tree -e no-dev` には現れず，既定ビルドの依存木は変わらない．
+pil-shim = { workspace = true, features = ["shim"] }
+pil-llm.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "time", "process"] }
+serde_json.workspace = true

@@ -23,10 +23,12 @@ OpenAI 互換シム・sidecar adapter・環境種別跨ぎ比較の成立・fine
   - [x] README.md 整備（DESIGN 要点反映）
   - [x] Phase 2 詳細計画作成（`thoughts/plans/phase2-plan.md`）
   - [x] **P2-M1 `pil-shim`（OpenAI 互換ローカルエンドポイント，keystone §4.1）** — 独立検証済み：default **184 tests**（175+9 mapping）/ `--features shim` **12 tests**（3 loopback は 127.0.0.1:0 で MockProvider 到達確認）/ **axum は既定ビルド非依存（tree 0 行）** / clippy 0（default+shim）/ fmt clean．feature `shim`（default=[]），`/v1/chat/completions`+`/v1/models`，OpenAI↔GenerateRequest 純関数 mapping は feature 非依存
-- Now: [→] P2-M2 tool-calling スキーマ変換（OpenAI ↔ Anthropic/Gemini）
-- Next: P2-M3 `pil-sidecar` 基盤
+- **順序変更（判断）**: P2-M2（tool-calling スキーマ変換）は AgentDojo の実要求が判明する M4 まで投機的なため後ろ倒し，先に P2-M3 で §4.1 制御反転を end-to-end 実証する（計画 §"P2-M2" の過剰実装戒めに沿う）
+  - [x] **P2-M3 `pil-sidecar` 基盤（native-first）** — 独立検証済み：default **193 tests**（+ config/provenance 単体）/ `--features sidecar` **7 tests**（funnel 1 + 単体 6）/ **tokio は既定 no-dev tree 非依存（0 行）** / clippy 0（default+sidecar）/ fmt clean．**funnel 実証**：stdlib のみの Python stub（urllib）→ シム → pil-llm，`MockProvider.call_count()==1`（第2系統なし）を assert．env 注入 `OPENAI_BASE_URL`+`OPENAI_API_KEY`，`kill_on_drop`+timeout，provenance に wall-clock 非依存
+- Now: [→] P2-M2 tool-calling スキーマ変換（M4 の要求確定後）or P2-M4 AgentDojo 取り込み
+- Next: P2-M4 AgentDojo 取り込み（EnvKind::Emulated 初の実データ．submodule 追加要ネットワーク）
 - Remaining:
-  - [ ] P2-M3 `pil-sidecar` 基盤（native-first）
+  - [ ] P2-M2 tool-calling スキーマ変換（OpenAI ↔ Anthropic/Gemini，M4 で範囲確定）
   - [ ] P2-M4 AgentDojo 取り込み（EnvKind::Emulated 初の実データ）
   - [ ] P2-M5 fine-tuned judge（qylu4156/strongreject-15k-v1，logit 期待値式）
   - [ ] P2-M6 横断比較レポート（cross-EnvKind，Kendall's W）
