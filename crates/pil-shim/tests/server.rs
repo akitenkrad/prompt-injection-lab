@@ -112,6 +112,70 @@ async fn chat_completion_passes_through_logprobs() {
 }
 
 #[tokio::test]
+async fn tool_calling_passthrough_over_loopback() {
+    // M2': tools＋tool_choice="auto"＋developer(system) を投げ，tool_calls が返り，
+    // MockProvider（単一経路）に到達することを確認する（§4.1）．
+    let provider = Arc::new(MockProvider::new());
+    let state = Arc::new(ShimState::new(
+        provider.clone(),
+        vec!["mock/mock-1".to_string()],
+    ));
+    let addr = spawn_shim(state).await;
+
+    let body = r#"{"model":"mock/mock-1","messages":[{"role":"developer","content":"you are an agent"},{"role":"user","content":"send an email"}],"tools":[{"type":"function","function":{"name":"send_email","description":"send","parameters":{"type":"object","properties":{}}}}],"tool_choice":"auto"}"#;
+    let request = format!(
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n{body}",
+        addr = addr,
+        len = body.len(),
+        body = body,
+    );
+
+    let (status, response) = http_request(addr, &request).await;
+    assert_eq!(status, 200, "response was: {response}");
+
+    let json: serde_json::Value =
+        serde_json::from_str(body_of(&response)).expect("parse JSON body");
+    assert_eq!(
+        json["choices"][0]["message"]["tool_calls"][0]["function"]["name"],
+        "send_email"
+    );
+    assert_eq!(json["choices"][0]["finish_reason"], "tool_calls");
+    // content は null（省略）
+    assert!(json["choices"][0]["message"]["content"].is_null());
+    // 制御反転: 外部要求が pil-llm 単一経路（MockProvider）に到達した．
+    assert_eq!(provider.call_count(), 1);
+}
+
+#[tokio::test]
+async fn multi_turn_tool_result_is_accepted() {
+    // M2': 前ターンの assistant tool_call ＋ role="tool" 結果を含む多ターン要求を受理し，
+    // 単一経路に funnel されることを確認する（200 で応答）．
+    let provider = Arc::new(MockProvider::new());
+    let state = Arc::new(ShimState::new(
+        provider.clone(),
+        vec!["mock/mock-1".to_string()],
+    ));
+    let addr = spawn_shim(state).await;
+
+    let body = r#"{"model":"mock/mock-1","messages":[{"role":"developer","content":"agent"},{"role":"user","content":"send email"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"send_email","arguments":"{}"}}]},{"role":"tool","tool_call_id":"call_1","name":"send_email","content":"sent ok"}],"tools":[{"type":"function","function":{"name":"send_email","parameters":{"type":"object"}}}],"tool_choice":"auto"}"#;
+    let request = format!(
+        "POST /v1/chat/completions HTTP/1.1\r\nHost: {addr}\r\nContent-Type: application/json\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n{body}",
+        addr = addr,
+        len = body.len(),
+        body = body,
+    );
+
+    let (status, response) = http_request(addr, &request).await;
+    assert_eq!(status, 200, "response was: {response}");
+
+    let json: serde_json::Value =
+        serde_json::from_str(body_of(&response)).expect("parse JSON body");
+    assert_eq!(json["object"], "chat.completion");
+    // 単一経路（MockProvider）に到達している．
+    assert_eq!(provider.call_count(), 1);
+}
+
+#[tokio::test]
 async fn models_endpoint_lists_configured_models() {
     let provider = Arc::new(MockProvider::new());
     let state = Arc::new(ShimState::new(provider, vec!["mock/mock-1".to_string()]));

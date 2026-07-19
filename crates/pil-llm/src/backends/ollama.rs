@@ -221,6 +221,8 @@ impl LlmProvider for OllamaProvider {
                 response,
                 metadata,
                 logprobs: map_logprobs(parsed.logprobs),
+                // Ollama native 経路は M2' 範囲外（ツール素通しはシム経由のみ）．常に空にする．
+                tool_calls: Vec::new(),
             })
         })
     }

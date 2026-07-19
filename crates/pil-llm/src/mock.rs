@@ -10,7 +10,7 @@ use pil_core::{FinishReason, ModelRef, Response};
 use crate::config::CallMetadata;
 use crate::error::LlmError;
 use crate::provider::{
-    BoxFuture, GenerateOutput, GenerateRequest, LlmProvider, TokenLogprobs, TopLogprob,
+    BoxFuture, GenerateOutput, GenerateRequest, LlmProvider, TokenLogprobs, ToolCall, TopLogprob,
 };
 
 /// 決定論的な canned 応答を返すモック（DESIGN §6.1）．
@@ -58,6 +58,48 @@ impl LlmProvider for MockProvider {
             self.calls.fetch_add(1, Ordering::SeqCst);
 
             let seed = req.effective_seed();
+
+            // ツールが広告され，かつ `tool_choice != "none"` なら決定論的にツール呼び出しを返す
+            // （§4.1 / M2'．AgentDojo のエージェントループをネットワーク無しで駆動できるようにする）．
+            let want_tool_call = req.tools.as_ref().is_some_and(|tools| !tools.is_empty())
+                && req.tool_choice.as_deref() != Some("none");
+
+            if want_tool_call {
+                // 先頭ツールを決定論的に呼ぶ．`call_id` はツール名の blake3 先頭から導く．
+                let tool = &req.tools.as_ref().unwrap()[0];
+                let id = format!(
+                    "call_{}",
+                    &blake3::hash(tool.name.as_bytes()).to_hex()[..12]
+                );
+                let tool_call = ToolCall {
+                    id,
+                    name: tool.name.clone(),
+                    arguments: "{}".to_string(),
+                };
+
+                let response = Response {
+                    text: String::new(),
+                    finish_reason: FinishReason::ToolCalls,
+                    prompt_tokens: Some(req.prompt.split_whitespace().count() as u32),
+                    completion_tokens: Some(0),
+                    reached_clip_limit: false,
+                };
+                let metadata = CallMetadata {
+                    model: req.model.model.clone(),
+                    endpoint: req.model.endpoint.clone(),
+                    temperature: req.config.temperature,
+                    seed,
+                    cache_hit: false,
+                };
+
+                return Ok(GenerateOutput {
+                    response,
+                    metadata,
+                    logprobs: None,
+                    tool_calls: vec![tool_call],
+                });
+            }
+
             // 決定論的な canned 応答．prompt / seed / attempt を織り込み，
             // 入力が違えば本文も変わるようにする．
             let text = format!(
@@ -103,6 +145,7 @@ impl LlmProvider for MockProvider {
                 response,
                 metadata,
                 logprobs,
+                tool_calls: Vec::new(),
             })
         })
     }

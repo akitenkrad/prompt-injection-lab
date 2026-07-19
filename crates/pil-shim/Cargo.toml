@@ -17,6 +17,7 @@ shim = ["dep:axum", "dep:tokio", "tokio/net", "tokio/io-util"]
 [dependencies]
 pil-llm.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 blake3.workspace = true
 axum = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true }

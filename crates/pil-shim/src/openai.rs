@@ -33,16 +33,83 @@ pub struct ChatCompletionRequest {
     /// ストリーミング要求（M1 では非対応・受理のみ）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream: Option<bool>,
+    /// エージェントが広告するツール群（M2'．`{type:"function", function:{...}}` の配列）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tools: Option<Vec<ChatCompletionTool>>,
+    /// ツール選択方針（M2'．文字列 `"auto"`/`"none"`/`"required"` またはオブジェクト）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_choice: Option<serde_json::Value>,
 }
 
-/// 1 メッセージ（`role` と `content`）．
+/// OpenAI の 1 ツール定義（`{type:"function", function:{name, description, parameters}}`．M2'）．
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ChatMessage {
-    /// `"system"` / `"user"` / `"assistant"` / `"tool"` 等
-    pub role: String,
-    /// 本文（欠損時は空文字）
+pub struct ChatCompletionTool {
+    /// 常に `"function"`
+    #[serde(rename = "type")]
+    pub tool_type: String,
+    /// 関数の仕様
+    pub function: FunctionDef,
+}
+
+/// `tools[].function`（`{name, description, parameters}`．`parameters` は JSON Schema．M2'）．
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FunctionDef {
+    /// 関数名
+    pub name: String,
+    /// 関数の説明（省略可）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// 引数の JSON Schema（省略時は空オブジェクト相当）
     #[serde(default)]
-    pub content: String,
+    pub parameters: serde_json::Value,
+}
+
+/// 1 メッセージ（`role` と `content`，及びツール呼び出し関連．M2'）．
+///
+/// AgentDojo はエージェントループで多様な役割を送ってくる:
+/// - `role="developer"`（system 相当）／`role="user"`／`role="assistant"`
+/// - `role="assistant"` ＋ `tool_calls`（前ターンでモデルが要求したツール呼び出し）
+/// - `role="tool"` ＋ `tool_call_id`（そのツールの実行結果）
+///
+/// これらを表現できるよう `content` は `Option`（tool_calls 応答時は null）とし，
+/// `tool_calls` / `tool_call_id` / `name` を任意フィールドで持つ（欠損時は素通し可能）．
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct ChatMessage {
+    /// `"system"` / `"developer"` / `"user"` / `"assistant"` / `"tool"` 等
+    pub role: String,
+    /// 本文．`tool_calls` を伴う assistant 応答では null（省略）になり得る
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<String>,
+    /// assistant がこのターンで要求したツール呼び出し（OpenAI 形．無ければ空で省略）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ToolCallObject>,
+    /// `role="tool"` メッセージが対応付ける呼び出し ID（結果 → 呼び出しの紐付け）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
+    /// ツール名（`role="tool"` の結果メッセージ等が持つことがある）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
+/// OpenAI `tool_calls[]` の 1 要素（`{id, type:"function", function:{name, arguments}}`．M2'）．
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolCallObject {
+    /// 呼び出し ID（`call_...`）
+    pub id: String,
+    /// 常に `"function"`
+    #[serde(rename = "type")]
+    pub call_type: String,
+    /// 呼ぶ関数（名前と引数 JSON 文字列）
+    pub function: FunctionCall,
+}
+
+/// `tool_calls[].function`（`{name, arguments}`．`arguments` は生 JSON 文字列．M2'）．
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FunctionCall {
+    /// 関数名
+    pub name: String,
+    /// 引数の生 JSON 文字列（OpenAI 準拠）
+    pub arguments: String,
 }
 
 /// OpenAI ChatCompletion の応答本体．

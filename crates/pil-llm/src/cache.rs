@@ -14,7 +14,7 @@ use pil_core::{AttackRef, CaseId, ModelRef, Response};
 
 use crate::config::{seed_for_attempt, CallMetadata};
 use crate::error::LlmError;
-use crate::provider::{GenerateOutput, GenerateRequest, LlmProvider, TokenLogprobs};
+use crate::provider::{GenerateOutput, GenerateRequest, LlmProvider, TokenLogprobs, ToolCall};
 
 /// キャッシュキーのドメインタグ（他ハッシュ空間との分離）．
 const CACHE_KEY_DOMAIN: &str = "pil.llm.cache.v1";
@@ -70,6 +70,17 @@ pub fn cache_key(req: &GenerateRequest) -> String {
     frame_opt_u32(&mut h, req.config.max_tokens);
     frame_opt_str(&mut h, req.config.system.as_deref());
     frame_opt_u32(&mut h, req.top_logprobs);
+    // tools / tool_choice（§4.1 / M2'）:
+    // `tools == None` のときは **一切ハッシュに触れない**ので，M2' 以前のキーとバイト一致を保つ
+    // （既存 tests/cache.rs のキー等価/非等価アサーションを壊さない）．
+    // ツールが付いた要求だけドメイン分離タグ＋安定シリアライズを畳み込み，別キーに分ける．
+    if let Some(tools) = req.tools.as_ref() {
+        frame(&mut h, b"tools");
+        // ToolSpec は決定論的にシリアライズできる（parameters は既に serde_json::Value）．
+        let serialized = serde_json::to_vec(tools).expect("ToolSpec is serializable");
+        frame(&mut h, &serialized);
+        frame_opt_str(&mut h, req.tool_choice.as_deref());
+    }
     // attempt + seed
     frame(&mut h, &req.attempt.to_le_bytes());
     frame(&mut h, &seed.to_le_bytes());
@@ -114,6 +125,11 @@ pub struct CacheEntry {
     pub response: Response,
     /// logprobs（要求時のみ）
     pub logprobs: Option<Vec<TokenLogprobs>>,
+    /// モデルが要求したツール呼び出し（無ければ空．§4.1 / M2'）
+    ///
+    /// 既存 JSONL との後方互換のため，欠損時は空 `Vec`（`default`），空なら書き出さない．
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_calls: Vec<ToolCall>,
     /// 生成時のメタデータ（`cache_hit == false` で保存）
     pub metadata: CallMetadata,
 }
@@ -161,6 +177,7 @@ impl<P: LlmProvider> CachingClient<P> {
                     response: entry.response.clone(),
                     metadata,
                     logprobs: entry.logprobs.clone(),
+                    tool_calls: entry.tool_calls.clone(),
                 });
             }
         }
@@ -177,6 +194,7 @@ impl<P: LlmProvider> CachingClient<P> {
             model: req.model.clone(),
             response: output.response.clone(),
             logprobs: output.logprobs.clone(),
+            tool_calls: output.tool_calls.clone(),
             metadata: output.metadata.clone(),
         };
         self.cache

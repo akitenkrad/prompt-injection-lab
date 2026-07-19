@@ -25,7 +25,8 @@ pub use config::{seed_for_attempt, CallMetadata, LlmConfig};
 pub use error::LlmError;
 pub use mock::MockProvider;
 pub use provider::{
-    BoxFuture, GenerateOutput, GenerateRequest, LlmProvider, TokenLogprobs, TopLogprob,
+    BoxFuture, GenerateOutput, GenerateRequest, LlmProvider, TokenLogprobs, ToolCall, ToolSpec,
+    TopLogprob,
 };
 pub use version::{meets_minimum, min_version_string, parse_semver, OLLAMA_MIN_VERSION};
 

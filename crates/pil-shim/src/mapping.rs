@@ -7,11 +7,13 @@
 
 use pil_llm::{
     FinishReason, GenerateOutput, GenerateRequest, LlmConfig, LlmError, ModelRef, TokenLogprobs,
+    ToolSpec,
 };
 
 use crate::openai::{
     ChatChoice, ChatCompletionRequest, ChatCompletionResponse, ChatMessage, ChoiceLogprobs,
-    OpenAiError, OpenAiErrorResponse, TokenLogprobEntry, TopLogprobEntry, Usage,
+    FunctionCall, OpenAiError, OpenAiErrorResponse, TokenLogprobEntry, ToolCallObject,
+    TopLogprobEntry, Usage,
 };
 
 /// シムが用いる既定の試行番号（§6.2 / §11.4）．
@@ -51,22 +53,68 @@ pub fn to_generate_request(req: &ChatCompletionRequest) -> GenerateRequest {
         generate.top_logprobs = Some(req.top_logprobs.unwrap_or(0));
     }
 
+    // ツール情報を単一経路（GenerateRequest）に集約する（§4.1 / M2'）．
+    // OpenAI の `tools[].function` を中立表現 `ToolSpec` に写す．
+    if let Some(tools) = req.tools.as_ref() {
+        let specs: Vec<ToolSpec> = tools
+            .iter()
+            .map(|tool| ToolSpec {
+                name: tool.function.name.clone(),
+                description: tool.function.description.clone(),
+                parameters: tool.function.parameters.clone(),
+            })
+            .collect();
+        generate.tools = Some(specs);
+    }
+    // `tool_choice` は文字列（"auto"/"none"/"required"）のみ写す（オブジェクト指定は素通し対象外）．
+    if let Some(choice) = req.tool_choice.as_ref().and_then(|v| v.as_str()) {
+        generate.tool_choice = Some(choice.to_string());
+    }
+
     generate
 }
 
-/// `messages` を rendered prompt と system プロンプトに分解する（§4.1 / §6.2）．
+/// `messages` を rendered prompt と system プロンプトに分解する（§4.1 / §6.2 / M2'）．
 ///
-/// - `role == "system"` のメッセージは連結して `LlmConfig.system` に載せる（複数なら改行連結）．
-/// - それ以外は `"{role}: {content}"` を改行で連結し，最終送信プロンプトにする（決定論的順序）．
+/// - `role == "system"` **及び `role == "developer"`** は連結して `LlmConfig.system` に載せる
+///   （AgentDojo は system を `developer` として送るため同一視する．複数なら改行連結）．
+/// - `role == "tool"` は `"tool[<id>|<name>]: <content>"` を 1 行にして畳み込み，
+///   多ターンのツール実行結果をプロンプトに含める（決定論的）．
+/// - `tool_calls` を伴う assistant は `"assistant: <content?> [tool_call <id> <name>(<args>)…]"`
+///   を決定論的に描画し，どのツールをどの引数で呼んだかをプロンプトに残す．
+/// - `content` 欠損（None）は空文字として扱う（tool_calls 応答等）．
 pub fn render_messages(messages: &[ChatMessage]) -> (String, Option<String>) {
-    let mut systems: Vec<&str> = Vec::new();
+    let mut systems: Vec<String> = Vec::new();
     let mut lines: Vec<String> = Vec::new();
 
     for message in messages {
-        if message.role == "system" {
-            systems.push(message.content.as_str());
-        } else {
-            lines.push(format!("{}: {}", message.role, message.content));
+        let content = message.content.as_deref().unwrap_or("");
+        match message.role.as_str() {
+            // developer は system と同一視する（AgentDojo 準拠）
+            "system" | "developer" => systems.push(content.to_string()),
+            "tool" => {
+                let id = message.tool_call_id.as_deref().unwrap_or("");
+                let name = message.name.as_deref().unwrap_or("");
+                lines.push(format!("tool[{id}|{name}]: {content}"));
+            }
+            role => {
+                if message.tool_calls.is_empty() {
+                    lines.push(format!("{role}: {content}"));
+                } else {
+                    // assistant のツール呼び出しを決定論的に描画する．
+                    let calls: Vec<String> = message
+                        .tool_calls
+                        .iter()
+                        .map(|call| {
+                            format!(
+                                "tool_call {} {}({})",
+                                call.id, call.function.name, call.function.arguments
+                            )
+                        })
+                        .collect();
+                    lines.push(format!("{role}: {content} [{}]", calls.join(", ")));
+                }
+            }
         }
     }
 
@@ -101,12 +149,38 @@ pub fn to_chat_completion_response(output: &GenerateOutput, model: &str) -> Chat
 
     let logprobs = output.logprobs.as_ref().map(|tokens| map_logprobs(tokens));
 
+    // ツール呼び出しがあれば OpenAI 形 `tool_calls[]` に写し，content は null（None）にする（M2'）．
+    // 無ければ従来通りテキスト応答（content = 本文）を返す．
+    let message = if output.tool_calls.is_empty() {
+        ChatMessage {
+            role: "assistant".to_string(),
+            content: Some(response.text.clone()),
+            ..Default::default()
+        }
+    } else {
+        let tool_calls = output
+            .tool_calls
+            .iter()
+            .map(|call| ToolCallObject {
+                id: call.id.clone(),
+                call_type: "function".to_string(),
+                function: FunctionCall {
+                    name: call.name.clone(),
+                    arguments: call.arguments.clone(),
+                },
+            })
+            .collect();
+        ChatMessage {
+            role: "assistant".to_string(),
+            content: None,
+            tool_calls,
+            ..Default::default()
+        }
+    };
+
     let choice = ChatChoice {
         index: 0,
-        message: ChatMessage {
-            role: "assistant".to_string(),
-            content: response.text.clone(),
-        },
+        message,
         finish_reason: Some(finish_reason_to_openai(&response.finish_reason)),
         logprobs,
     };

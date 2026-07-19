@@ -19,6 +19,35 @@ use crate::error::LlmError;
 /// 戻り値をボックス化した Future にしてトレイトオブジェクト化を可能にする．
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
+/// エージェント（AgentDojo 等）が広告する 1 ツールの仕様（DESIGN §4.1 / M2'）．
+///
+/// OpenAI の `tools[].function`（`{name, description, parameters}`）に対応する中立表現．
+/// `parameters` はツール引数の JSON Schema をそのまま保持する（シムを素通しするため）．
+/// ツール情報を**副経路ではなく** `GenerateRequest` 単一経路に集約する（§4.1 の単一経路原則）．
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolSpec {
+    /// ツール名（関数名）
+    pub name: String,
+    /// ツールの説明（省略可）
+    pub description: Option<String>,
+    /// 引数の JSON Schema（そのまま保持）
+    pub parameters: serde_json::Value,
+}
+
+/// モデルが要求した 1 ツール呼び出し（DESIGN §4.1 / M2'）．
+///
+/// `arguments` は OpenAI 同様に**生の JSON 文字列**として保持する（構造化しない）．
+/// 応答側では `choices[0].message.tool_calls[]` の `function.arguments` に素通しする．
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolCall {
+    /// 呼び出し ID（`call_...`）．後続の `role="tool"` 結果と対応付ける
+    pub id: String,
+    /// 呼ぶツール名（関数名）
+    pub name: String,
+    /// 引数の生 JSON 文字列（OpenAI 準拠）
+    pub arguments: String,
+}
+
 /// 1 生成の要求（DESIGN §6.2）．
 ///
 /// `prompt` は `AttackRef` の変換適用後の**最終送信プロンプト**（`rendered_prompt`, §5.6 / §6.2）．
@@ -35,6 +64,10 @@ pub struct GenerateRequest {
     pub attempt: u32,
     /// `top_logprobs` を要求する場合の個数（None なら要求しない．§6.3）
     pub top_logprobs: Option<u32>,
+    /// エージェントが広告するツール群（None なら通常の生成．§4.1 / M2'）
+    pub tools: Option<Vec<ToolSpec>>,
+    /// ツール選択方針（`"auto"` / `"none"` / `"required"` 等．OpenAI の `tool_choice` 文字列）
+    pub tool_choice: Option<String>,
 }
 
 impl GenerateRequest {
@@ -50,12 +83,26 @@ impl GenerateRequest {
             config,
             attempt,
             top_logprobs: None,
+            tools: None,
+            tool_choice: None,
         }
     }
 
     /// `top_logprobs` の要求個数を設定する（§6.3）．
     pub fn with_top_logprobs(mut self, n: u32) -> Self {
         self.top_logprobs = Some(n);
+        self
+    }
+
+    /// 広告ツール群を設定する（§4.1 / M2'）．
+    pub fn with_tools(mut self, tools: Vec<ToolSpec>) -> Self {
+        self.tools = Some(tools);
+        self
+    }
+
+    /// ツール選択方針を設定する（§4.1 / M2'）．
+    pub fn with_tool_choice(mut self, tool_choice: String) -> Self {
+        self.tool_choice = Some(tool_choice);
         self
     }
 
@@ -74,6 +121,8 @@ pub struct GenerateOutput {
     pub metadata: CallMetadata,
     /// トークン毎の logprobs（§6.3．要求時かつプロバイダが返した場合のみ Some）
     pub logprobs: Option<Vec<TokenLogprobs>>,
+    /// モデルが要求したツール呼び出し（無ければ空．§4.1 / M2'）
+    pub tool_calls: Vec<ToolCall>,
 }
 
 /// 生成された 1 トークンの logprob と，その位置の候補分布（DESIGN §6.3 / §8.3）．
