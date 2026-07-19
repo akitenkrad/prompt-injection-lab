@@ -1,0 +1,25 @@
+[package]
+name = "pil-shim"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "prompt-injection-lab: OpenAI 互換ローカルシム．pil-llm 単一経路へ集約 (§4.1)．HTTP サーバは feature gate・既定は network-free"
+
+[features]
+# 既定は network-free．OpenAI 型と純変換のみを含み，HTTP サーバ (axum/tokio net) は
+# feature `shim` でのみ導入する (§4.1 / §6.1)．既定ビルドは axum を一切参照しない．
+default = []
+shim = ["dep:axum", "dep:tokio", "tokio/net", "tokio/io-util"]
+
+[dependencies]
+pil-llm.workspace = true
+serde.workspace = true
+blake3.workspace = true
+axum = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+
+[dev-dependencies]
+serde_json.workspace = true

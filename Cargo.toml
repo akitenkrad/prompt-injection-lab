@@ -11,6 +11,7 @@ members = [
     "crates/pil-attacks",
     "crates/pil-runner",
     "crates/pil-report",
+    "crates/pil-shim",
     "crates/pil-cli",
 ]
 
@@ -34,6 +35,7 @@ pil-bench-jbb = { path = "crates/pil-bench-jbb" }
 pil-attacks = { path = "crates/pil-attacks" }
 pil-runner = { path = "crates/pil-runner" }
 pil-report = { path = "crates/pil-report" }
+pil-shim = { path = "crates/pil-shim" }
 
 # シリアライズ
 serde = { version = "1", features = ["derive"] }
@@ -61,6 +63,9 @@ anyhow = "1"
 
 # HTTP（feature gate 対象・既定ビルドから除外）
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# HTTP サーバ（OpenAI 互換シム用・feature `shim` でのみ導入・既定ビルドから除外）
+axum = { version = "0.8", default-features = false, features = ["json", "http1", "tokio"] }
 
 # テスト補助
 base64 = "0.22"
