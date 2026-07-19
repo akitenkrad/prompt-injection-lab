@@ -13,3 +13,6 @@
 [submodule "third_party/JBB-Behaviors"]
 	path = third_party/JBB-Behaviors
 	url = https://huggingface.co/datasets/JailbreakBench/JBB-Behaviors
+[submodule "third_party/agentdojo"]
+	path = third_party/agentdojo
+	url = https://github.com/ethz-spylab/agentdojo

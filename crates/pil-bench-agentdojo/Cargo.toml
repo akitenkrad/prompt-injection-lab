@@ -1,0 +1,31 @@
+[package]
+name = "pil-bench-agentdojo"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "prompt-injection-lab: AgentDojo 取り込み (EnvKind::Emulated)．ケース型・provenance・結果 JSON パース (§4.1/§4.2/§10)．ライブ実行は feature gate・既定は network-free"
+
+[features]
+# 既定は network-free (§4.1 / §6.1)．ケース型・provenance・結果 JSON パースの純ロジックのみを含む．
+# `agentdojo` は sidecar 駆動のライブ実行経路 (ignored 統合テスト) を有効化する (M4b の前提)．
+# ライブ配線の重い依存 (tokio/axum) は dev-dependencies に置くため，既定の `cargo tree -e no-dev`
+# には現れない．
+default = []
+agentdojo = []
+
+[dependencies]
+pil-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# ライブ実行 (feature `agentdojo`, #[ignore]) の配線用．dev-dependencies なので
+# `cargo tree -e no-dev` には現れず，既定 network-free ビルドの依存木を変えない (§6.1)．
+pil-sidecar = { workspace = true, features = ["sidecar"] }
+pil-shim = { workspace = true, features = ["shim"] }
+pil-llm.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "process"] }

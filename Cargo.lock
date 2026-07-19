@@ -840,6 +840,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "pil-bench-agentdojo"
+version = "0.1.0"
+dependencies = [
+ "pil-core",
+ "pil-llm",
+ "pil-shim",
+ "pil-sidecar",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+]
+
+[[package]]
 name = "pil-bench-harmbench"
 version = "0.1.0"
 dependencies = [

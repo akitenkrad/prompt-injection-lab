@@ -8,6 +8,7 @@ members = [
     "crates/pil-bench-harmbench",
     "crates/pil-bench-strongreject",
     "crates/pil-bench-jbb",
+    "crates/pil-bench-agentdojo",
     "crates/pil-attacks",
     "crates/pil-runner",
     "crates/pil-report",
@@ -33,6 +34,7 @@ pil-bench-advbench = { path = "crates/pil-bench-advbench" }
 pil-bench-harmbench = { path = "crates/pil-bench-harmbench" }
 pil-bench-strongreject = { path = "crates/pil-bench-strongreject" }
 pil-bench-jbb = { path = "crates/pil-bench-jbb" }
+pil-bench-agentdojo = { path = "crates/pil-bench-agentdojo" }
 pil-attacks = { path = "crates/pil-attacks" }
 pil-runner = { path = "crates/pil-runner" }
 pil-report = { path = "crates/pil-report" }
