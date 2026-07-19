@@ -1,0 +1,39 @@
+[package]
+name = "pil-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "prompt-injection-lab: CLI (reliability / run / report)"
+
+[[bin]]
+name = "pil"
+path = "src/main.rs"
+
+[features]
+default = []
+# LLM バックエンドを CLI から透過的に有効化する
+ollama = ["pil-llm/ollama"]
+openai = ["pil-llm/openai"]
+anthropic = ["pil-llm/anthropic"]
+gemini = ["pil-llm/gemini"]
+
+[dependencies]
+pil-core.workspace = true
+pil-llm.workspace = true
+pil-metrics.workspace = true
+pil-bench-advbench.workspace = true
+pil-bench-harmbench.workspace = true
+pil-bench-strongreject.workspace = true
+pil-bench-jbb.workspace = true
+pil-attacks.workspace = true
+pil-runner.workspace = true
+pil-report.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+tokio.workspace = true

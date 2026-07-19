@@ -1,0 +1,15 @@
+[submodule "third_party/llm-attacks"]
+	path = third_party/llm-attacks
+	url = https://github.com/llm-attacks/llm-attacks
+[submodule "third_party/HarmBench"]
+	path = third_party/HarmBench
+	url = https://github.com/centerforaisafety/HarmBench
+[submodule "third_party/strongreject"]
+	path = third_party/strongreject
+	url = https://github.com/alexandrasouly/strongreject
+[submodule "third_party/strong_reject"]
+	path = third_party/strong_reject
+	url = https://github.com/dsbowen/strong_reject
+[submodule "third_party/JBB-Behaviors"]
+	path = third_party/JBB-Behaviors
+	url = https://huggingface.co/datasets/JailbreakBench/JBB-Behaviors

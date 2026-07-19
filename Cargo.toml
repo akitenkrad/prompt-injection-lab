@@ -1,0 +1,66 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/pil-core",
+    "crates/pil-llm",
+    "crates/pil-metrics",
+    "crates/pil-bench-advbench",
+    "crates/pil-bench-harmbench",
+    "crates/pil-bench-strongreject",
+    "crates/pil-bench-jbb",
+    "crates/pil-attacks",
+    "crates/pil-runner",
+    "crates/pil-report",
+    "crates/pil-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT"
+repository = "https://github.com/akitenkrad/prompt-injection-lab"
+authors = ["akitenkrad"]
+
+[workspace.dependencies]
+# 内部 crate
+pil-core = { path = "crates/pil-core" }
+pil-llm = { path = "crates/pil-llm" }
+pil-metrics = { path = "crates/pil-metrics" }
+pil-bench-advbench = { path = "crates/pil-bench-advbench" }
+pil-bench-harmbench = { path = "crates/pil-bench-harmbench" }
+pil-bench-strongreject = { path = "crates/pil-bench-strongreject" }
+pil-bench-jbb = { path = "crates/pil-bench-jbb" }
+pil-attacks = { path = "crates/pil-attacks" }
+pil-runner = { path = "crates/pil-runner" }
+pil-report = { path = "crates/pil-report" }
+
+# シリアライズ
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+# CSV / ハッシュ
+csv = "1.3"
+blake3 = "1.5"
+
+# 統計 / 乱数
+statrs = "0.17"
+rand = "0.8"
+rand_chacha = "0.3"
+
+# 非同期 / 並行（既定 network-free ビルドでも利用する制御系）
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "fs"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# エラー
+thiserror = "1"
+anyhow = "1"
+
+# HTTP（feature gate 対象・既定ビルドから除外）
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# テスト補助
+base64 = "0.22"

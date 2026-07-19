@@ -1,0 +1,20 @@
+/target
+**/*.rs.bk
+Cargo.lock.orig
+
+# 実行成果物（provenance 同梱・タイムスタンプ付き）
+/results/
+
+# LLM 応答キャッシュ（有害応答を含みうるため公開しない — DESIGN §1.4）
+/.cache/
+/cache/
+
+# スクラッチ
+/scratch_*.sh
+/scratch_*.log
+
+# Claude Code プロジェクトローカルキャッシュ
+/.claude/tsc-cache/
+
+# OS
+.DS_Store

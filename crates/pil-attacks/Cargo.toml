@@ -1,0 +1,17 @@
+[package]
+name = "pil-attacks"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "prompt-injection-lab: 攻撃変換 (Base64/Leet/Translate/Roleplay/RefusalSuppression) 文献再現のみ"
+
+[dependencies]
+pil-core.workspace = true
+serde.workspace = true
+base64.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]

@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 上流ベンチは submodule で SHA 固定．ローダ/回帰テストが実ファイルを直読する (§7.3)
+          submodules: recursive
+      - name: Install toolchain
+        run: rustup show
+      - name: Format check
+        run: cargo fmt --all --check
+      - name: Clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Test (default features = network-free)
+        run: cargo test --workspace

@@ -1,0 +1,22 @@
+[package]
+name = "pil-metrics"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "prompt-injection-lab: 測定器 (instrument) / 集計 (aggregate) / 判定器信頼性 (reliability)"
+
+[dependencies]
+pil-core.workspace = true
+pil-llm.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+csv.workspace = true
+statrs.workspace = true
+rand.workspace = true
+rand_chacha.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]

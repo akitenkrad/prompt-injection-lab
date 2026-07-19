@@ -1,0 +1,22 @@
+[package]
+name = "pil-report"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "prompt-injection-lab: 提示層 (二値化+undecidable 併記・信頼区間・ContentKey 重複検出)"
+
+[dependencies]
+pil-core.workspace = true
+pil-metrics.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# §3.4 の非独立性を実データで再現するためのローダ（workspace path crate）．
+pil-bench-advbench = { path = "../pil-bench-advbench" }
+pil-bench-harmbench = { path = "../pil-bench-harmbench" }
+pil-bench-jbb = { path = "../pil-bench-jbb" }

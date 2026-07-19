@@ -1,0 +1,24 @@
+[package]
+name = "pil-runner"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "prompt-injection-lab: 実行器 (多試行・有界並行・レート制御・中断再開)"
+
+[dependencies]
+pil-core.workspace = true
+pil-llm.workspace = true
+pil-metrics.workspace = true
+pil-attacks.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["io-util"] }
+rand.workspace = true
+rand_chacha.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }

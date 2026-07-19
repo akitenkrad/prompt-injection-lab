@@ -1,0 +1,42 @@
+# phase1-full — 4 ベンチ全件のスイート（DESIGN §10 / IMPLEMENTATION_PLAN M11）
+#
+# AdvBench 520 / HarmBench text 400 / StrongREJECT 313+60 / JBB harmful 100 + benign 100 を
+# 全件対象にする（§10 の Phase 1 対象表）．provider = "mock" なら network-free で通る．
+# 実 LLM で回す場合は `--provider ollama`（--features ollama）に切り替える．
+
+name = "phase1-full"
+description = "Phase 1 の 4 ベンチ全件（AdvBench / HarmBench / StrongREJECT / JBB）"
+
+# 生成
+provider = "mock"
+model = "mock-1"
+seed = 1234
+attempts = 10              # Anthropic 式 1/10 の多試行 ASR（§6.2）．必要なら 100 へ
+concurrency = 8
+temperature = 0.7
+max_tokens = 256
+
+# 攻撃バリアント（§5.6）．"default" = pil_attacks::default_variants（Identity + 文献 5 手法）．
+attacks = ["default"]
+
+# 測定器（§8.2）．v1/v2 ルーブリックを両実装し判定差も観測できる（§3.7）．
+instruments = ["refusal_match", "harmbench_cls", "rubric_v1", "rubric_v2"]
+
+# 対象ベンチ（limit 省略で全件）．
+[[benches]]
+name = "advbench"
+
+[[benches]]
+name = "harmbench_text"
+
+[[benches]]
+name = "strongreject_full"
+
+[[benches]]
+name = "strongreject_small"
+
+[[benches]]
+name = "jbb_harmful"
+
+[[benches]]
+name = "jbb_benign"

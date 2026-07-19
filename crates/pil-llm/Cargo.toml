@@ -1,0 +1,30 @@
+[package]
+name = "pil-llm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "prompt-injection-lab: プロバイダ抽象 (Ollama 既定 + OpenAI/Anthropic/Gemini)．既定は network-free"
+
+[features]
+# 既定は network-free．HTTP を要するバックエンドは feature gate する (§6.1)
+default = []
+net = ["dep:reqwest"]
+ollama = ["net"]
+openai = ["net"]
+anthropic = ["net"]
+gemini = ["net"]
+
+[dependencies]
+pil-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+blake3.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+reqwest = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
