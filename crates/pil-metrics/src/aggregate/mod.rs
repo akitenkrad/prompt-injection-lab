@@ -15,6 +15,7 @@
 //! 件数を保持する（§5.3）．
 
 pub mod bootstrap;
+pub mod concordance;
 pub mod interval;
 
 use std::collections::BTreeMap;
@@ -24,6 +25,7 @@ use serde::{Deserialize, Serialize};
 use pil_core::{AttackRef, CaseId, EnvKind, InstrumentRef, Trial, Verdict};
 
 pub use bootstrap::{bootstrap_ci, BootstrapMethod};
+pub use concordance::{instrument_concordance, kendall_w, InstrumentConcordance, KendallW};
 pub use interval::{
     clopper_pearson_interval, normal_cdf, normal_quantile, wilson_interval, ConfidenceInterval,
     Z_95,

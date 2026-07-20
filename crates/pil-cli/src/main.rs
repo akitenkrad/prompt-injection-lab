@@ -55,6 +55,10 @@ enum Command {
         /// 対象の run ディレクトリ（`results/run_*`）．
         #[arg(long)]
         run: PathBuf,
+        /// EnvKind 跨ぎの明示開示（プール ASR + 警告 + Kendall W）を出す（§8.1 / §3.7）．
+        /// 既定（未指定）では横断スカラを一切出さない．
+        #[arg(long, default_value_t = false)]
+        cross_env: bool,
     },
     /// AgentDojo 1 ケースをシム経由でライブ実行する（feature `agentdojo-live`）．
     #[cfg(feature = "agentdojo-live")]
@@ -78,7 +82,7 @@ fn main() -> Result<()> {
                 .build()?;
             runtime.block_on(commands::run::run(&repo_root, &parsed))
         }
-        Command::Report { run } => commands::report::run(&repo_root, &run),
+        Command::Report { run, cross_env } => commands::report::run(&repo_root, &run, cross_env),
         #[cfg(feature = "agentdojo-live")]
         Command::Agentdojo(args) => {
             // ライブ実行は非同期（シム起動 + sidecar 起動）．現在スレッドの外に multi-thread ランタイムを立てる．

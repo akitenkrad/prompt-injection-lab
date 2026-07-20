@@ -14,11 +14,15 @@
 //! - **judge 信頼性レポートの整形**（[`reliability_fmt`]）で §3.1 表を再現する（§8.4）．
 
 pub mod binarize;
+pub mod cross_env;
 pub mod duplicates;
 pub mod present;
 pub mod reliability_fmt;
 
 pub use binarize::{binarize, BinarizationPolicy, BinarizedCounts};
+pub use cross_env::{
+    cross_env_disclosure, per_env_view, CrossEnvDisclosure, EnvKindPresentation, PerEnvView,
+};
 pub use duplicates::{detect_duplicates, DuplicateReport, PairwiseOverlap, DUPLICATE_METHOD};
 pub use present::AsrPresentation;
 pub use reliability_fmt::format_reliability;

@@ -19,11 +19,14 @@ use std::path::Path;
 use anyhow::{bail, Context, Result};
 use serde_json::json;
 
-use pil_core::{Case, EnvKind, Trial, Verdict};
+use pil_core::{Case, EnvKind, InstrumentRef, Trial, Verdict};
 use pil_metrics::aggregate::{
-    asr_curve_by_env, single_shot_asr_by_env, union_coverage_by_env, wilson_interval, Z_95,
+    asr_curve_by_env, single_shot_asr_by_env, union_coverage_by_env, wilson_interval, CrossEnv,
+    Z_95,
 };
-use pil_report::{detect_duplicates, AsrPresentation, DUPLICATE_METHOD};
+use pil_report::{
+    cross_env_disclosure, detect_duplicates, per_env_view, AsrPresentation, DUPLICATE_METHOD,
+};
 
 use crate::commands::{make_results_dir, write_text, Provenance};
 use crate::suite::load_bench;
@@ -37,8 +40,8 @@ const BOOT_SEED: u64 = 0xB007;
 /// RefusalMatch 測定器名（過剰拒否の判定に使う）．
 const REFUSAL_MATCH: &str = "advbench-refusal-match";
 
-/// `pil report` の本体．
-pub fn run(repo_root: &Path, run_dir: &Path) -> Result<()> {
+/// `pil report` の本体．`cross_env` が真のときのみ EnvKind 跨ぎの明示開示を出す（§8.1 / §3.7）．
+pub fn run(repo_root: &Path, run_dir: &Path, cross_env: bool) -> Result<()> {
     let trials = read_trials(run_dir)?;
     let cases = read_cases(run_dir)?;
     if trials.is_empty() {
@@ -108,6 +111,55 @@ pub fn run(repo_root: &Path, run_dir: &Path) -> Result<()> {
             }));
         }
     }
+
+    // --- EnvKind 横並び（既定・安全；横断スカラは出さない，§8.1） ---
+    writeln!(
+        out,
+        "\n## EnvKind 横並び（測定器別 ASR を EnvKind ごとに併置．跨いだ単一スコアは出さない，§8.1）"
+    )?;
+    let per_env = per_env_view(&by_env, Z_95);
+    out.push_str(&indent(&per_env.render(), "  "));
+
+    // --- EnvKind 跨ぎの明示開示（--cross-env のときだけ．既定では横断スカラを一切出さない） ---
+    let cross_env_json = if cross_env {
+        writeln!(
+            out,
+            "\n## EnvKind 跨ぎの明示開示（--cross-env 指定時のみ；プール ASR + 警告 + Kendall W，§8.1 / §3.7）"
+        )?;
+        if envs.len() <= 1 {
+            writeln!(
+                out,
+                "  EnvKind が 1 種のため跨ぐ対象が無い（Phase 1 は StaticPrompt のみ；§10）．"
+            )?;
+            json!(null)
+        } else {
+            let mut disclosures = Vec::new();
+            for inst in all_instruments(&trials) {
+                let disc = cross_env_disclosure(
+                    &by_env,
+                    &inst,
+                    Z_95,
+                    CrossEnv::i_understand_incomparable(),
+                );
+                out.push_str(&indent(&disc.render(), "  "));
+                disclosures.push(json!({
+                    "instrument": inst.name,
+                    "version": inst.version,
+                    "warning": disc.warning,
+                    "pooled_asr": disc.pooled.result.asr,
+                    "pooled_envs": disc.pooled.envs.iter().map(|e| format!("{e:?}")).collect::<Vec<_>>(),
+                    "kendall_w": disc.concordance.as_ref().map(|c| c.kendall.w),
+                    "concordance_instruments": disc.concordance.as_ref().map(|c| c.instruments.len()),
+                    "concordance_n_cases_used": disc.concordance.as_ref().map(|c| c.n_cases_used),
+                    "concordance_n_cases_dropped_undecidable":
+                        disc.concordance.as_ref().map(|c| c.n_cases_dropped_undecidable),
+                }));
+            }
+            json!(disclosures)
+        }
+    } else {
+        json!(null)
+    };
 
     // --- union coverage（単一最良 vs union，§2.2） ---
     writeln!(
@@ -234,6 +286,7 @@ pub fn run(repo_root: &Path, run_dir: &Path) -> Result<()> {
         "phase1_cross_env_comparison": false,
         "ks": ks,
         "single_shot_asr": single_json,
+        "cross_env_disclosure": cross_env_json,
         "union_coverage": union_json,
         "asr_curve": curve_json,
         "over_refusal": over_json,
@@ -258,6 +311,21 @@ pub fn run(repo_root: &Path, run_dir: &Path) -> Result<()> {
 
     println!("成果物: {}", dir.display());
     Ok(())
+}
+
+/// 全 Trial に現れる測定器を出現順に一意化する（EnvKind 跨ぎ開示の対象測定器）．
+///
+/// `InstrumentRef` は `Ord`/`Hash` を持たないため線形 dedup する（§5.4 の同一性で照合）．
+fn all_instruments(trials: &[Trial]) -> Vec<InstrumentRef> {
+    let mut out: Vec<InstrumentRef> = Vec::new();
+    for t in trials {
+        for m in &t.measurements {
+            if !out.iter().any(|i| i == &m.instrument) {
+                out.push(m.instrument.clone());
+            }
+        }
+    }
+    out
 }
 
 /// 多試行 ASR 曲線の k 集合（{1,10,100} ∩ [1, max_attempt] に max_attempt を加える）．
