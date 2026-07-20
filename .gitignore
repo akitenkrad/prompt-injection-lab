@@ -30,3 +30,10 @@ Cargo.lock.orig
 
 # OS
 .DS_Store
+
+# AgentDojo 用 Python venv (M4b ライブ実行．git 非追跡)
+/.venv-agentdojo/
+
+# Python バイトコードキャッシュ
+__pycache__/
+*.pyc

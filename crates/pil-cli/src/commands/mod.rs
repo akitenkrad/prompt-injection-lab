@@ -3,6 +3,8 @@
 //! `reliability` / `run` / `report` の 3 本．成果物は `results/{subcommand}_YYYYMMDD_HHMMSS/`
 //! に落とし，`provenance.json`（submodule pin・パラメータ・タイムスタンプ）を必ず同梱する．
 
+#[cfg(feature = "agentdojo-live")]
+pub mod agentdojo;
 pub mod reliability;
 pub mod report;
 pub mod run;

@@ -19,6 +19,15 @@ ollama = ["pil-llm/ollama"]
 openai = ["pil-llm/openai"]
 anthropic = ["pil-llm/anthropic"]
 gemini = ["pil-llm/gemini"]
+# AgentDojo 1 ケースをシム経由でライブ実行する `agentdojo` サブコマンドを有効化する（P2-M4b）．
+# 既定ビルドはこのサブコマンド・reqwest・axum・tokio::process を一切引き込まない（§6.1）．
+agentdojo-live = [
+    "openai",
+    "pil-shim/shim",
+    "pil-sidecar/sidecar",
+    "pil-bench-agentdojo/agentdojo",
+    "tokio/net",
+]
 
 [dependencies]
 pil-core.workspace = true
@@ -31,6 +40,10 @@ pil-bench-jbb.workspace = true
 pil-attacks.workspace = true
 pil-runner.workspace = true
 pil-report.workspace = true
+# `agentdojo` サブコマンド（feature `agentdojo-live`）でのみ使う．既定ビルドではコンパイルしない．
+pil-shim = { workspace = true, optional = true }
+pil-sidecar = { workspace = true, optional = true }
+pil-bench-agentdojo = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true

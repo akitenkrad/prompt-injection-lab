@@ -4,7 +4,46 @@
 //! HTTP サーバ（[`crate::server`]）はこの型を axum の `Json` 抽出／応答に用いるだけで，
 //! 変換ロジック自体は [`crate::mapping`] の純関数が担う（§4.1 の制御反転）．
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+
+/// `content` を **文字列 or content-part 配列** の双方から受理し，単一文字列へ平坦化する（M2'）．
+///
+/// OpenAI 互換クライアント（openai SDK / AgentDojo）は `content` を
+/// `"文字列"` でも `[{"type":"text","text":"…"}]` でも送ってくる．後者を `String` 固定で
+/// 受けると 422（invalid type: sequence）になるため，text パートを連結して吸収する．
+/// null / 欠損は `None`．
+fn deserialize_flexible_content<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    /// content-part の 1 要素（`{"type":"text","text":"…"}`．text 以外は本文へ寄与しない）．
+    #[derive(Deserialize)]
+    struct ContentPart {
+        #[serde(default, rename = "type")]
+        part_type: String,
+        #[serde(default)]
+        text: String,
+    }
+
+    /// 文字列 or パート配列のどちらか（untagged）．
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Content {
+        Text(String),
+        Parts(Vec<ContentPart>),
+    }
+
+    let opt = Option::<Content>::deserialize(deserializer)?;
+    Ok(opt.map(|content| match content {
+        Content::Text(text) => text,
+        Content::Parts(parts) => parts
+            .into_iter()
+            .filter(|part| part.part_type.is_empty() || part.part_type == "text")
+            .map(|part| part.text)
+            .collect::<Vec<_>>()
+            .join(""),
+    }))
+}
 
 /// OpenAI `POST /v1/chat/completions` の要求本体（非ストリーミング，M1 範囲）．
 ///
@@ -77,8 +116,16 @@ pub struct FunctionDef {
 pub struct ChatMessage {
     /// `"system"` / `"developer"` / `"user"` / `"assistant"` / `"tool"` 等
     pub role: String,
-    /// 本文．`tool_calls` を伴う assistant 応答では null（省略）になり得る
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// 本文．`tool_calls` を伴う assistant 応答では null（省略）になり得る．
+    ///
+    /// OpenAI 規約では `content` は**文字列**または**content-part の配列**
+    /// （`[{"type":"text","text":"…"}]`）を取り得る（openai SDK は後者を送ることがある）．
+    /// 受理時は text パートを連結して単一文字列へ平坦化する（[`deserialize_flexible_content`]）．
+    #[serde(
+        default,
+        deserialize_with = "deserialize_flexible_content",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub content: Option<String>,
     /// assistant がこのターンで要求したツール呼び出し（OpenAI 形．無ければ空で省略）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

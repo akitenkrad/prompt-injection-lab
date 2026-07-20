@@ -144,11 +144,14 @@ pub fn load_enumeration(json: &str) -> Result<Vec<Case>, AdapterError> {
 /// 決定論的述語（LLM judge 非依存）による `utility`/`security` を核とする．
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AgentDojoResult {
-    /// suite 名．
+    /// suite 名（完全な `TaskResults` JSON にのみ在る．最小 driver 出力では欠落＝空）．
+    #[serde(default)]
     pub suite_name: String,
-    /// pipeline 名（モデル + 防御の合成名）．
+    /// pipeline 名（モデル + 防御の合成名．最小 driver 出力では欠落＝空）．
+    #[serde(default)]
     pub pipeline_name: String,
-    /// user task ID．
+    /// user task ID（最小 driver 出力では欠落＝空）．
+    #[serde(default)]
     pub user_task_id: String,
     /// injection task ID（`none` ケースでは `null`）．
     #[serde(default)]

@@ -43,23 +43,36 @@ def main() -> int:
     from agentdojo.agent_pipeline.agent_pipeline import AgentPipeline, PipelineConfig
     from agentdojo.attacks.attack_registry import load_attack
     from agentdojo.benchmark import benchmark_suite_with_injections
+    from agentdojo.logging import OutputLogger
     from agentdojo.task_suite.load_suites import get_suites
 
     suite = get_suites(args.benchmark_version)[args.suite]
-    pipeline = AgentPipeline.from_config(PipelineConfig(llm=args.model, model_id=args.model))
+    # PipelineConfig は defense / system_message_name / system_message も必須（既定なし）．
+    pipeline = AgentPipeline.from_config(
+        PipelineConfig(
+            llm=args.model,
+            model_id=args.model,
+            defense=None,
+            system_message_name=None,
+            system_message=None,
+        )
+    )
     attacker = load_attack(args.attack, suite, pipeline)
 
+    # AgentDojo の TraceLogger は ambient な Logger コンテキスト（delegate.logdir）を参照する．
+    # CLI と同様に OutputLogger で囲まないと NullLogger.logdir が無く落ちる．
     with tempfile.TemporaryDirectory() as logdir:
-        results = benchmark_suite_with_injections(
-            pipeline,
-            suite,
-            attacker,
-            user_tasks=(args.user_task,),
-            injection_tasks=(args.injection_task,),
-            logdir=Path(logdir),
-            force_rerun=True,
-            benchmark_version=args.benchmark_version,
-        )
+        with OutputLogger(str(logdir), live=None):
+            results = benchmark_suite_with_injections(
+                pipeline,
+                suite,
+                attacker,
+                user_tasks=(args.user_task,),
+                injection_tasks=(args.injection_task,),
+                logdir=Path(logdir),
+                force_rerun=True,
+                benchmark_version=args.benchmark_version,
+            )
 
     key = (args.user_task, args.injection_task)
     out = {

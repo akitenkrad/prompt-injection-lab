@@ -56,6 +56,9 @@ enum Command {
         #[arg(long)]
         run: PathBuf,
     },
+    /// AgentDojo 1 ケースをシム経由でライブ実行する（feature `agentdojo-live`）．
+    #[cfg(feature = "agentdojo-live")]
+    Agentdojo(commands::agentdojo::AgentdojoArgs),
 }
 
 fn main() -> Result<()> {
@@ -76,5 +79,13 @@ fn main() -> Result<()> {
             runtime.block_on(commands::run::run(&repo_root, &parsed))
         }
         Command::Report { run } => commands::report::run(&repo_root, &run),
+        #[cfg(feature = "agentdojo-live")]
+        Command::Agentdojo(args) => {
+            // ライブ実行は非同期（シム起動 + sidecar 起動）．現在スレッドの外に multi-thread ランタイムを立てる．
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(commands::agentdojo::run(&repo_root, &args))
+        }
     }
 }
