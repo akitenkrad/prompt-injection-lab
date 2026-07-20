@@ -46,6 +46,9 @@ The default build requires no network. Backends and sidecar plumbing are opt-in:
 - `pil-shim`: `shim` — brings in the axum/tokio HTTP server for the OpenAI-compatible endpoint. Without it, only the pure OpenAI ⇄ `pil-llm` mapping is compiled.
 - `pil-sidecar`: `sidecar` — enables the actual Python process launch (`tokio::process`).
 - `pil-bench-agentdojo`: `agentdojo` — gates the sidecar-driven live path (requires a real AgentDojo pip install and a tool-capable model), documented as `#[ignore]` integration tests and kept out of default CI.
+- `pil-cli`: `agentdojo-live` — the umbrella feature that turns on the whole live AgentDojo path. It pulls in `openai` (the OpenAI-compatible `pil-llm` backend), `pil-shim/shim`, `pil-sidecar/sidecar`, and `pil-bench-agentdojo/agentdojo`, and is what exposes the `pil agentdojo` subcommand.
+
+Every one of these gates a networked or live path; the default build and `cargo test --workspace` stay network-free.
 
 ```bash
 # Enable a real LLM backend only when you need one
@@ -56,7 +59,7 @@ The Ollama backend requires `>= 0.12.11` (which added `top_logprobs`) and checks
 
 ## CLI
 
-`pil` has three subcommands. Artifacts land in a timestamped `results/{subcommand}_YYYYMMDD_HHMMSS/`, always accompanied by a `provenance.json` recording the submodule pins, parameters, and timestamp. The global option `--repo-root <PATH>` selects the root containing `third_party/` (defaults to an upward search from the current directory).
+`pil` has three subcommands in the default build (`reliability` / `run` / `report`), plus `agentdojo` when built with the `agentdojo-live` feature. Artifacts land in a timestamped `results/{subcommand}_YYYYMMDD_HHMMSS/`, always accompanied by a `provenance.json` recording the submodule pins, parameters, and timestamp. The global option `--repo-root <PATH>` selects the root containing `third_party/` (defaults to an upward search from the current directory).
 
 ### `pil reliability` — disclose judge reliability
 
@@ -85,3 +88,37 @@ From a run directory, it aggregates single-shot ASR + confidence interval, union
 ```bash
 cargo run -p pil-cli -- report --run results/run_20260719_120000
 ```
+
+- `--run <DIR>`: the run directory. It is **repeatable** — passing `--run A --run B` unions the runs before aggregating, so a static-prompt run and an emulated (AgentDojo) run can be reported together. The default single-`--run` usage above still works.
+- `--cross-env`: opt in to the cross-`EnvKind` disclosure. By default the report places per-`EnvKind` ASR side by side and emits no cross-environment scalar; with this flag it additionally discloses the pooled value with a warning plus Kendall's W (coefficient of concordance), which is reported as undefined when the environments share no common instrument or cases.
+
+```bash
+# Report a static-prompt run and an emulated run together, with the cross-environment disclosure
+cargo run -p pil-cli --features agentdojo-live -- report --run <static_run_dir> --run <emulated_run_dir> --cross-env
+```
+
+### `pil agentdojo` — run an agentic (emulated) benchmark live through the shim
+
+Available only when built with the `agentdojo-live` feature. It runs AgentDojo as an `EnvKind::Emulated` benchmark: a local `pil-shim` serves an OpenAI-compatible endpoint, and a thin Python sidecar runs AgentDojo's environment / tools / scoring with its client pointed at the shim, so every model call funnels through the single `pil-llm` path.
+
+**Prerequisites:**
+
+- A Python virtualenv with `agentdojo` installed from the pinned `third_party/agentdojo` submodule (the CLI defaults to `.venv-agentdojo/bin/python`; override with `--python`).
+- A running Ollama serving a **tool-capable** model (the CLI defaults to `http://localhost:11434/v1`; override with `--ollama-base` and `--model`).
+- Building with the `agentdojo-live` feature.
+
+It has two modes:
+
+- **single** (no `--limit`) — run one case and write a `result.json`:
+
+```bash
+cargo run -p pil-cli --features agentdojo-live -- agentdojo --suite banking --user-task user_task_0 --injection-task injection_task_0 --attack important_instructions
+```
+
+- **batch** (`--limit N`) — enumerate cases and run the first N, writing an `EnvKind::Emulated` run directory (`cases.jsonl` / `trials.jsonl` / `run_meta.json` / `provenance.json`) that `pil report` reads directly:
+
+```bash
+cargo run -p pil-cli --features agentdojo-live -- agentdojo --suite banking --attack important_instructions --limit 8
+```
+
+The batch output feeds straight into `pil report` (for example an agentic injection-success rate reported with a confidence interval), and can be unioned with a static-prompt run under `--cross-env` as shown above.

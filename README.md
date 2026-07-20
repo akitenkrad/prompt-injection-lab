@@ -13,6 +13,9 @@ A Rust research platform that runs existing prompt-injection and jailbreak bench
 - **Reports multi-trial ASR with confidence intervals** — Wilson score by default, Clopper–Pearson and bootstrap BCa where appropriate, always alongside the count of undecidable cases.
 - **Detects cross-benchmark non-independence** — automatically finds duplicated questions across benchmarks by content fingerprint, so "three benchmarks agreed" is not just the same item counted three times.
 - **Measures over-refusal** — treats refusal rate as a paired signal on benign prompts, never as a standalone safety score.
+- **Compares across environment kinds** — beyond the four static-prompt benchmarks, it now also integrates an agentic (tool-use) benchmark as an *emulated* environment, so an injection-success rate from a static-prompt benchmark and one from an agentic environment can be placed side by side under one measurement path — never silently pooled into a single cross-environment scalar.
+
+**Status:** Phase 1 is complete and Phase 2 — control inversion, the emulated agentic environment, and cross-environment reporting — is largely complete; only a fine-tuned judge remains.
 
 ## Getting Started
 
@@ -36,8 +39,8 @@ cargo test --workspace
 ## Documentation
 
 - [docs/design.md](docs/design.md) — motivation, evidence, design principles, responsible use, and the phase roadmap.
-- [docs/architecture.md](docs/architecture.md) — the crate layout and the control-inversion design for environment-typed benchmarks.
-- [docs/usage.md](docs/usage.md) — submodules, build and test with cargo features, and the CLI (`reliability` / `run` / `report`).
+- [docs/architecture.md](docs/architecture.md) — the crate layout and the realized control-inversion design for environment-typed benchmarks.
+- [docs/usage.md](docs/usage.md) — submodules, build and test with cargo features, and the CLI (`reliability` / `run` / `report` / `agentdojo`).
 
 ## License
 

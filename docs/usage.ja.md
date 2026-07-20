@@ -46,6 +46,9 @@ cargo fmt --check
 - `pil-shim`: `shim` — OpenAI 互換エンドポイント用の axum/tokio HTTP サーバを導入する．無効時は OpenAI ⇄ `pil-llm` の純変換のみをコンパイルする．
 - `pil-sidecar`: `sidecar` — 実際の Python プロセス起動（`tokio::process`）を有効化する．
 - `pil-bench-agentdojo`: `agentdojo` — sidecar 駆動のライブ経路（実 AgentDojo の pip インストールと実ツール対応モデルを要する）を gate する．`#[ignore]` の統合テストとして文書化し，既定 CI から外す．
+- `pil-cli`: `agentdojo-live` — ライブ AgentDojo 経路全体を有効化する統括 feature．`openai`（OpenAI 互換 `pil-llm` バックエンド）・`pil-shim/shim`・`pil-sidecar/sidecar`・`pil-bench-agentdojo/agentdojo` を引き込み，`pil agentdojo` サブコマンドを露出する．
+
+これらはいずれもネットワーク／ライブ経路を gate する．既定ビルドと `cargo test --workspace` は network-free のままである．
 
 ```bash
 # 実 LLM バックエンドを使う場合のみ有効化する
@@ -56,7 +59,7 @@ Ollama バックエンドは `top_logprobs`（v0.12.11 で対応）のため `>=
 
 ## CLI
 
-`pil` は 3 つのサブコマンドを持つ．成果物はタイムスタンプ付きの `results/{subcommand}_YYYYMMDD_HHMMSS/` に落ち，submodule pin・パラメータ・タイムスタンプを刻んだ `provenance.json` を必ず同梱する．グローバルオプション `--repo-root <PATH>` で `third_party/` を含むルートを指定できる（省略時は CWD から上方探索）．
+`pil` は既定ビルドで 3 つのサブコマンド（`reliability` / `run` / `report`）を持ち，`agentdojo-live` feature つきでビルドすると `agentdojo` が加わる．成果物はタイムスタンプ付きの `results/{subcommand}_YYYYMMDD_HHMMSS/` に落ち，submodule pin・パラメータ・タイムスタンプを刻んだ `provenance.json` を必ず同梱する．グローバルオプション `--repo-root <PATH>` で `third_party/` を含むルートを指定できる（省略時は CWD から上方探索）．
 
 ### `pil reliability` — judge 信頼性の開示
 
@@ -85,3 +88,37 @@ run ディレクトリから，単発 ASR + 信頼区間 / union coverage / asr@
 ```bash
 cargo run -p pil-cli -- report --run results/run_20260719_120000
 ```
+
+- `--run <DIR>`: run ディレクトリ．**繰り返し指定でき**，`--run A --run B` は集計前に run を union する．静的プロンプトの run と emulated（AgentDojo）の run を一緒に報告できる（上記の単一 `--run` 用法もそのまま使える）．
+- `--cross-env`: `EnvKind` 跨ぎの開示を opt-in する．既定では `EnvKind` ごとの ASR を並置し横断スカラを出さないが，本フラグ指定時は追加でプール値を警告および Kendall の一致係数 W とともに開示する（共通の測定器・ケースを持たない環境間では W を未定義として報告する）．
+
+```bash
+# 静的プロンプトの run と emulated の run を一緒に，横断開示つきで報告する
+cargo run -p pil-cli --features agentdojo-live -- report --run <static_run_dir> --run <emulated_run_dir> --cross-env
+```
+
+### `pil agentdojo` — エージェント型（emulated）ベンチをシム経由でライブ実行
+
+`agentdojo-live` feature つきビルドでのみ利用できる．AgentDojo を `EnvKind::Emulated` のベンチとして実行する：ローカルの `pil-shim` が OpenAI 互換エンドポイントを立て，薄い Python sidecar が AgentDojo の環境／ツール／scoring を，client をシムへ向けた状態で走らせる．これによりモデル呼び出しは全て単一の `pil-llm` 経路に funnel される．
+
+**前提条件:**
+
+- commit 固定の `third_party/agentdojo` submodule から `agentdojo` を入れた Python 仮想環境（CLI 既定は `.venv-agentdojo/bin/python`；`--python` で上書き）．
+- **ツール対応**モデルを配信中の Ollama（CLI 既定は `http://localhost:11434/v1`；`--ollama-base` と `--model` で上書き）．
+- `agentdojo-live` feature つきビルド．
+
+2 つのモードを持つ：
+
+- **single**（`--limit` 省略）— 1 ケースを実行し `result.json` を書く：
+
+```bash
+cargo run -p pil-cli --features agentdojo-live -- agentdojo --suite banking --user-task user_task_0 --injection-task injection_task_0 --attack important_instructions
+```
+
+- **batch**（`--limit N`）— ケースを列挙し先頭 N 件を実行し，`pil report` がそのまま読める `EnvKind::Emulated` の run dir（`cases.jsonl` / `trials.jsonl` / `run_meta.json` / `provenance.json`）を書く：
+
+```bash
+cargo run -p pil-cli --features agentdojo-live -- agentdojo --suite banking --attack important_instructions --limit 8
+```
+
+batch 出力はそのまま `pil report` に流せ（例えばエージェント型のインジェクション成功率を信頼区間つきで報告できる），上記の `--cross-env` で静的プロンプトの run と union できる．
