@@ -52,9 +52,10 @@ enum Command {
     },
     /// run の成果物から集計レポートを出す（§8.1）．
     Report {
-        /// 対象の run ディレクトリ（`results/run_*`）．
-        #[arg(long)]
-        run: PathBuf,
+        /// 対象の run ディレクトリ（`results/run_*` / `results/agentdojo_batch_*`）．
+        /// 繰り返し指定でき（`--run A --run B`），複数指定した run は union（連結）して集計する．
+        #[arg(long, required = true)]
+        run: Vec<PathBuf>,
         /// EnvKind 跨ぎの明示開示（プール ASR + 警告 + Kendall W）を出す（§8.1 / §3.7）．
         /// 既定（未指定）では横断スカラを一切出さない．
         #[arg(long, default_value_t = false)]

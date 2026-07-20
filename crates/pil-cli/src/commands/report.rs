@@ -14,7 +14,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use serde_json::json;
@@ -41,17 +41,30 @@ const BOOT_SEED: u64 = 0xB007;
 const REFUSAL_MATCH: &str = "advbench-refusal-match";
 
 /// `pil report` の本体．`cross_env` が真のときのみ EnvKind 跨ぎの明示開示を出す（§8.1 / §3.7）．
-pub fn run(repo_root: &Path, run_dir: &Path, cross_env: bool) -> Result<()> {
-    let trials = read_trials(run_dir)?;
-    let cases = read_cases(run_dir)?;
+///
+/// `run_dirs` は 1 つ以上の run ディレクトリ．複数指定した場合は trials / cases を **union**（連結）
+/// してから集計する．異なる EnvKind の dir（StaticPrompt の Phase-1 run と Emulated の agentdojo batch）
+/// を並べると，既存の EnvKind 横並び + `--cross-env` 開示がそのまま両者を提示する（§8.1）．
+pub fn run(repo_root: &Path, run_dirs: &[PathBuf], cross_env: bool) -> Result<()> {
+    if run_dirs.is_empty() {
+        bail!("run ディレクトリが 1 つも指定されていません（--run を 1 つ以上）");
+    }
+
+    // 複数 run dir を union する（trials / cases を連結；case_index 構築時にキーで de-dup）．
+    let mut trials: Vec<Trial> = Vec::new();
+    let mut cases: Vec<Case> = Vec::new();
+    for dir in run_dirs {
+        trials.extend(read_trials(dir)?);
+        cases.extend(read_cases(dir)?);
+    }
     if trials.is_empty() {
         bail!(
-            "run ディレクトリに trials が 1 件もありません: {}",
-            run_dir.display()
+            "指定 run ディレクトリに trials が 1 件もありません: {}",
+            fmt_dirs(run_dirs)
         );
     }
 
-    // CaseId(short) -> Case（env / benign を引く）．
+    // CaseId(short) -> Case（env / benign を引く）．union で同一キーが来たら last-wins で de-dup する．
     let case_index: BTreeMap<String, Case> = cases
         .iter()
         .map(|c| (c.id.short().to_string(), c.clone()))
@@ -71,8 +84,14 @@ pub fn run(repo_root: &Path, run_dir: &Path, cross_env: bool) -> Result<()> {
     let ks = multi_trial_ks(max_attempt);
 
     let mut out = String::new();
-    writeln!(out, "# pil report（{}）", run_dir.display())?;
-    writeln!(out, "trials={} cases={}", trials.len(), cases.len())?;
+    writeln!(out, "# pil report（{}）", fmt_dirs(run_dirs))?;
+    writeln!(
+        out,
+        "run_dirs={} trials={} cases={}",
+        run_dirs.len(),
+        trials.len(),
+        cases.len()
+    )?;
 
     // --- Phase 1 の割り切り（§10）を明示する ---
     let envs: Vec<EnvKind> = by_env.keys().copied().collect();
@@ -279,7 +298,7 @@ pub fn run(repo_root: &Path, run_dir: &Path, cross_env: bool) -> Result<()> {
     let dir = make_results_dir(repo_root, "report")?;
     write_text(&dir, "report.txt", &out)?;
     let machine = json!({
-        "run_dir": run_dir.display().to_string(),
+        "run_dirs": run_dirs.iter().map(|d| d.display().to_string()).collect::<Vec<_>>(),
         "n_trials": trials.len(),
         "n_cases": cases.len(),
         "env_kinds": envs.iter().map(|e| format!("{e:?}")).collect::<Vec<_>>(),
@@ -302,7 +321,7 @@ pub fn run(repo_root: &Path, run_dir: &Path, cross_env: bool) -> Result<()> {
         "report",
         None,
         json!({
-            "run_dir": run_dir.display().to_string(),
+            "run_dirs": run_dirs.iter().map(|d| d.display().to_string()).collect::<Vec<_>>(),
             "n_trials": trials.len(),
             "ks": ks,
         }),
@@ -426,6 +445,14 @@ fn read_jsonl<T: serde::de::DeserializeOwned>(path: &Path) -> Result<Vec<T>> {
         out.push(item);
     }
     Ok(out)
+}
+
+/// 複数の run ディレクトリを表示用に `, ` 区切りで連結する．
+fn fmt_dirs(dirs: &[PathBuf]) -> String {
+    dirs.iter()
+        .map(|d| d.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// 割合を `NaN` 安全に `%` 文字列へ．

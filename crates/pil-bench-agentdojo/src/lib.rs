@@ -22,7 +22,10 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use pil_core::{Case, InstrumentRef, Measurement, MeasurementParams, SourceRef};
+use pil_core::{
+    AttackRef, Case, FinishReason, InstrumentRef, Measurement, MeasurementParams, ModelRef,
+    Response, SourceRef, Trial,
+};
 
 // アダプタ利用側（統合テスト・runner）が pil-core を直接依存に足さず判定型へ触れられるよう再輸出する．
 pub use pil_core::{EnvKind, UndecidableReason, Verdict};
@@ -225,6 +228,70 @@ impl AgentDojoResult {
             raw,
         }
     }
+
+    /// この結果を注入次元の [`Trial`] へ写す（DESIGN §5.5 / §8.1 の型強制入力）．
+    ///
+    /// - `case` の [`CaseId`](pil_core::CaseId) を参照し，唯一の測定として [`to_measurement`](Self::to_measurement)
+    ///   （agentdojo-security 測定器）を積む．これで `report` が `EnvKind::Emulated` として集計できる．
+    /// - AgentDojo は union coverage のバリアント軸を持たない（内部の attack registry は pil の
+    ///   `Transform` 集合に写らない）ため，`attack` は基準点 [`AttackRef::identity`] に固定する．
+    /// - security 述語はツール呼び出しに対する決定論的判定であり応答本文を用いないため `response.text`
+    ///   は空とし，`finish_reason` は正常時 `ToolCalls`・エラー時 `Other("error")` とする．
+    /// - `attempt` は 1 に固定する（batch は 1 試行の列挙）．`model` は provenance 用に写す（有れば
+    ///   pipeline 名，無ければ `agentdojo`）．集計は `attack`/`measurements`/`case` で行い model は用いない．
+    pub fn to_trial(&self, case: &Case) -> Trial {
+        let finish_reason = match self.verdict() {
+            Verdict::Undecidable { .. } => FinishReason::Other("error".to_string()),
+            _ => FinishReason::ToolCalls,
+        };
+        let model_name = if self.pipeline_name.trim().is_empty() {
+            "agentdojo".to_string()
+        } else {
+            self.pipeline_name.clone()
+        };
+        Trial {
+            case: case.id.clone(),
+            attempt: 1,
+            model: ModelRef::new("agentdojo", model_name, None),
+            attack: AttackRef::identity(),
+            response: Response {
+                text: String::new(),
+                finish_reason,
+                prompt_tokens: None,
+                completion_tokens: None,
+                reached_clip_limit: false,
+            },
+            measurements: vec![self.to_measurement()],
+        }
+    }
+
+    /// per-case のエラー（sidecar 失敗・parse 失敗）を `Undecidable` に潰さず記録する結果を作る（§3.6）．
+    ///
+    /// `utility=false`・`security=false`・`error=Some(msg)` とし，batch はこれを 1 件として集計へ含める
+    /// （0 にも 1 にも潰さない）．`msg` が空の場合でも `verdict` は `Undecidable` になるよう非空化する．
+    pub fn errored(message: impl Into<String>) -> Self {
+        let msg = message.into();
+        let msg = if msg.trim().is_empty() {
+            "unknown error".to_string()
+        } else {
+            msg
+        };
+        Self {
+            suite_name: String::new(),
+            pipeline_name: String::new(),
+            user_task_id: String::new(),
+            injection_task_id: None,
+            attack_type: None,
+            injections: serde_json::Value::Null,
+            messages: serde_json::Value::Null,
+            error: Some(msg),
+            utility: false,
+            security: false,
+            duration: None,
+            evaluation_timestamp: None,
+            agentdojo_package_version: None,
+        }
+    }
 }
 
 /// AgentDojo の注入 security 述語を表す測定器参照（DESIGN §5.4）．
@@ -355,6 +422,69 @@ mod tests {
             m.raw.contains("\"utility\":true"),
             "utility を潰さず raw に保持"
         );
+    }
+
+    #[test]
+    fn to_trial_success_maps_to_success_measurement() {
+        let case = sample().to_case();
+        let trial = result(true, true, None).to_trial(&case);
+        assert_eq!(trial.case, case.id, "Trial は Case の CaseId を参照する");
+        assert_eq!(trial.attempt, 1);
+        assert_eq!(trial.attack, AttackRef::identity(), "バリアント軸は基準点");
+        assert_eq!(
+            trial.measurements.len(),
+            1,
+            "測定は agentdojo-security の 1 件"
+        );
+        assert_eq!(trial.measurements[0].verdict, Verdict::Success);
+        assert_eq!(trial.measurements[0].instrument.name, "agentdojo-security");
+        assert_eq!(trial.response.finish_reason, FinishReason::ToolCalls);
+        assert!(trial.response.text.is_empty());
+    }
+
+    #[test]
+    fn to_trial_failure_maps_to_failure_measurement() {
+        let case = sample().to_case();
+        let trial = result(true, false, None).to_trial(&case);
+        assert_eq!(trial.measurements[0].verdict, Verdict::Failure);
+        assert_eq!(trial.response.finish_reason, FinishReason::ToolCalls);
+    }
+
+    #[test]
+    fn to_trial_error_maps_to_undecidable_measurement() {
+        let case = sample().to_case();
+        let trial = result(false, true, Some("boom".to_string())).to_trial(&case);
+        match &trial.measurements[0].verdict {
+            Verdict::Undecidable {
+                reason: UndecidableReason::ProviderError { message },
+            } => assert_eq!(message, "boom"),
+            other => panic!("expected ProviderError Undecidable, got {other:?}"),
+        }
+        assert_eq!(
+            trial.response.finish_reason,
+            FinishReason::Other("error".to_string()),
+            "エラー時は tool-calls ではなく error 停止として写す"
+        );
+    }
+
+    #[test]
+    fn errored_is_undecidable_and_not_success() {
+        let r = AgentDojoResult::errored("sidecar failed");
+        assert!(!r.utility);
+        assert!(!r.security);
+        assert_eq!(r.error.as_deref(), Some("sidecar failed"));
+        match r.verdict() {
+            Verdict::Undecidable {
+                reason: UndecidableReason::ProviderError { message },
+            } => assert_eq!(message, "sidecar failed"),
+            other => panic!("expected ProviderError Undecidable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn errored_empty_message_is_still_undecidable() {
+        let r = AgentDojoResult::errored("   ");
+        assert!(matches!(r.verdict(), Verdict::Undecidable { .. }));
     }
 
     fn result(utility: bool, security: bool, error: Option<String>) -> AgentDojoResult {
