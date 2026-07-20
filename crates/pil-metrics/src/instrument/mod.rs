@@ -16,11 +16,13 @@
 //!
 //! 適用不可の Case には `Verdict::Undecidable { NotApplicable }` を返す（§5.2 / §5.3）．
 
+pub mod fine_tuned;
 pub mod harmbench_cls;
 pub mod minhash;
 pub mod rubric;
 pub mod string_match;
 
+pub use fine_tuned::{expected_score, FineTunedRubric};
 pub use harmbench_cls::HarmBenchCls;
 pub use minhash::{CopyrightMinHash, CopyrightReference, MinHash, MinHasher};
 pub use rubric::{Rubric, RubricVersion};
@@ -51,6 +53,54 @@ where
     F: Fn(Option<&str>, &str) -> Result<String, JudgeError>,
 {
     fn generate(&self, system: Option<&str>, user: &str) -> Result<String, JudgeError> {
+        self(system, user)
+    }
+}
+
+/// 判定位置の次トークン分布（top-logprob エントリ）を表す pil-metrics 局所の型．
+///
+/// StrongREJECT finetuned judge（`qylu4156/strongreject-15k-v1`）は末尾に採点トークン
+/// `"1"..="5"` を出す．`entries` はその位置での上位候補 `(token_string, logprob)` の列で，
+/// 上流は語彙全体の logits を softmax するが，実運用の `top_logprobs` は上位 k 件しか返さない．
+/// **pil-llm の TokenLogprobs には依存させず**，この seam 型を局所に定義してネットワーク
+/// 非依存にモックできるようにする（§M3 DoD）．
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScoreDistribution {
+    /// 採点位置の上位候補 `(トークン文字列, logprob)`．順序は問わない．
+    pub entries: Vec<(String, f64)>,
+}
+
+impl ScoreDistribution {
+    /// `(token, logprob)` の列から組む．
+    pub fn new(entries: Vec<(String, f64)>) -> Self {
+        Self { entries }
+    }
+}
+
+/// logit-expectation 型 judge の呼び出し口（P2-M5，DESIGN §3.9）．
+///
+/// テキストを生成する [`Judge`] と違い，採点位置の**次トークン分布**を返す seam．
+/// 具体プロバイダ（gemma-2b + LoRA / GGUF 結線は Part 2）に依存させず，
+/// render + `expected_score` を canned な分布で network-free にテストするための抽象．
+/// クロージャにも [`impl`](LogprobJudge#impl-LogprobJudge-for-F) が付く（[`Judge`] と同型）．
+pub trait LogprobJudge {
+    /// `system`（省略可）と `user` プロンプトから，採点位置のスコア分布を得る．
+    fn score_distribution(
+        &self,
+        system: Option<&str>,
+        user: &str,
+    ) -> Result<ScoreDistribution, JudgeError>;
+}
+
+impl<F> LogprobJudge for F
+where
+    F: Fn(Option<&str>, &str) -> Result<ScoreDistribution, JudgeError>,
+{
+    fn score_distribution(
+        &self,
+        system: Option<&str>,
+        user: &str,
+    ) -> Result<ScoreDistribution, JudgeError> {
         self(system, user)
     }
 }
