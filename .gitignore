@@ -37,3 +37,6 @@ Cargo.lock.orig
 # Python バイトコードキャッシュ
 __pycache__/
 *.pyc
+
+# StrongREJECT fine-tuned judge 用 venv (Part 2．git 非追跡)
+/.venv-strongreject/

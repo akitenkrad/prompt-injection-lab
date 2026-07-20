@@ -28,6 +28,10 @@ agentdojo-live = [
     "pil-bench-agentdojo/agentdojo",
     "tokio/net",
 ]
+# StrongREJECT fine-tuned judge を python sidecar 経由で回す `strongreject-judge` サブコマンドを
+# 有効化する（P2-M5）．sidecar は std::process で直接起動するため tokio/process は不要で，
+# 既定ビルド（network-free）はこのサブコマンドを一切引き込まない（§6.1）．
+strongreject-judge = []
 
 [dependencies]
 pil-core.workspace = true

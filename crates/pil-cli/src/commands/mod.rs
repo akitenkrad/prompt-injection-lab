@@ -8,6 +8,8 @@ pub mod agentdojo;
 pub mod reliability;
 pub mod report;
 pub mod run;
+#[cfg(feature = "strongreject-judge")]
+pub mod strongreject_judge;
 
 use std::path::{Path, PathBuf};
 

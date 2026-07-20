@@ -64,6 +64,9 @@ enum Command {
     /// AgentDojo 1 ケースをシム経由でライブ実行する（feature `agentdojo-live`）．
     #[cfg(feature = "agentdojo-live")]
     Agentdojo(commands::agentdojo::AgentdojoArgs),
+    /// StrongREJECT fine-tuned judge を python sidecar 経由で回す（feature `strongreject-judge`）．
+    #[cfg(feature = "strongreject-judge")]
+    StrongrejectJudge(commands::strongreject_judge::StrongrejectJudgeArgs),
 }
 
 fn main() -> Result<()> {
@@ -92,5 +95,8 @@ fn main() -> Result<()> {
                 .build()?;
             runtime.block_on(commands::agentdojo::run(&repo_root, &args))
         }
+        // sidecar は std::process で同期起動するため tokio ランタイムは不要．
+        #[cfg(feature = "strongreject-judge")]
+        Command::StrongrejectJudge(args) => commands::strongreject_judge::run(&repo_root, &args),
     }
 }
