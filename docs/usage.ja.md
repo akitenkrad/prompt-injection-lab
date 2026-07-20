@@ -47,6 +47,7 @@ cargo fmt --check
 - `pil-sidecar`: `sidecar` — 実際の Python プロセス起動（`tokio::process`）を有効化する．
 - `pil-bench-agentdojo`: `agentdojo` — sidecar 駆動のライブ経路（実 AgentDojo の pip インストールと実ツール対応モデルを要する）を gate する．`#[ignore]` の統合テストとして文書化し，既定 CI から外す．
 - `pil-cli`: `agentdojo-live` — ライブ AgentDojo 経路全体を有効化する統括 feature．`openai`（OpenAI 互換 `pil-llm` バックエンド）・`pil-shim/shim`・`pil-sidecar/sidecar`・`pil-bench-agentdojo/agentdojo` を引き込み，`pil agentdojo` サブコマンドを露出する．
+- `pil-cli`: `strongreject-judge` — fine-tuned StrongREJECT judge で外部供給の `{prompt, response}` ペアを採点する `pil strongreject-judge` サブコマンドを gate する．sidecar は `std::process` で同期起動し，ネットワークバックエンドは一切引き込まないため，無効時の既定ビルドは network-free のままである．
 
 これらはいずれもネットワーク／ライブ経路を gate する．既定ビルドと `cargo test --workspace` は network-free のままである．
 
@@ -59,7 +60,7 @@ Ollama バックエンドは `top_logprobs`（v0.12.11 で対応）のため `>=
 
 ## CLI
 
-`pil` は既定ビルドで 3 つのサブコマンド（`reliability` / `run` / `report`）を持ち，`agentdojo-live` feature つきでビルドすると `agentdojo` が加わる．成果物はタイムスタンプ付きの `results/{subcommand}_YYYYMMDD_HHMMSS/` に落ち，submodule pin・パラメータ・タイムスタンプを刻んだ `provenance.json` を必ず同梱する．グローバルオプション `--repo-root <PATH>` で `third_party/` を含むルートを指定できる（省略時は CWD から上方探索）．
+`pil` は既定ビルドで 3 つのサブコマンド（`reliability` / `run` / `report`）を持ち，`agentdojo-live` feature つきでビルドすると `agentdojo` が，`strongreject-judge` feature つきでビルドすると `strongreject-judge` が加わる．成果物はタイムスタンプ付きの `results/{subcommand}_YYYYMMDD_HHMMSS/` に落ち，submodule pin・パラメータ・タイムスタンプを刻んだ `provenance.json` を必ず同梱する．グローバルオプション `--repo-root <PATH>` で `third_party/` を含むルートを指定できる（省略時は CWD から上方探索）．
 
 ### `pil reliability` — judge 信頼性の開示
 
@@ -122,3 +123,24 @@ cargo run -p pil-cli --features agentdojo-live -- agentdojo --suite banking --at
 ```
 
 batch 出力はそのまま `pil report` に流せ（例えばエージェント型のインジェクション成功率を信頼区間つきで報告できる），上記の `--cross-env` で静的プロンプトの run と union できる．
+
+### `pil strongreject-judge` — fine-tuned StrongREJECT judge で {prompt, response} ペアを採点
+
+`strongreject-judge` feature つきビルドでのみ利用できる．外部供給の `{forbidden_prompt, response}` ペアを fine-tuned StrongREJECT judge（`qylu4156/strongreject-15k-v1`，logit 期待値式スコア）で採点し，`pil report` がそのまま読める run ディレクトリ（`trials.jsonl` / `cases.jsonl` / `run_meta.json` / `provenance.json`）を書く — そのスコアは rubric v1 / v2 と並んで StrongREJECT judge 一致度に加わる．base `google/gemma-2b` + LoRA アダプタは薄い Python sidecar（`crates/pil-metrics/python/score_dist.py`）で走らせ，採点式と三値判定（採点トークン欠如 → Undecidable）は Rust 側に留める．
+
+**前提条件:**
+
+- `torch`・`transformers`・`peft` を入れた Python 仮想環境（CLI 既定は `.venv-strongreject/bin/python`；`--python` で上書き）．
+- Hugging Face 認証：base `google/gemma-2b` は **gated** モデルのため，ライセンスに同意し `hf auth login` でトークンを与えてから初回利用する．
+- sidecar `crates/pil-metrics/python/score_dist.py`（本リポジトリに同梱）．
+- `strongreject-judge` feature つきビルド．
+
+```bash
+cargo run -p pil-cli --features strongreject-judge -- strongreject-judge --input <pairs.json>
+```
+
+`<pairs.json>` は `{"forbidden_prompt", "response"}` オブジェクトの JSON 配列である．フラグ:
+
+- `--input <PATH>`: 採点対象の `{forbidden_prompt, response}` ペアを並べた JSON 配列．
+- `--python <PATH>`: sidecar 用 Python インタプリタ（既定 `.venv-strongreject/bin/python`）．
+- `--threshold <F>`: 二値化しきい値（`score >= threshold` を Success とする；既定 `0.5`）．連続スコアはしきい値によらず必ず測定へ残す．

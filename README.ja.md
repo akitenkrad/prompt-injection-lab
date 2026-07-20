@@ -14,8 +14,9 @@
 - **ベンチマーク間の非独立性を検出する** — 内容フィンガープリントによりベンチマークを跨いだ重複設問を自動検出し，「3 ベンチが一致した」が同一設問を 3 回数えているだけの状態を防ぐ．
 - **過剰拒否を測る** — 拒否率は benign プロンプト上の対の信号として扱い，単独の安全性スコアにはしない．
 - **環境種別を跨いで比較する** — 4 つの静的プロンプトベンチに加え，エージェント型（ツール利用）ベンチを *emulated* 環境として取り込んだ．静的プロンプトベンチのインジェクション成功率と，エージェント環境のそれとを，単一の測定経路のもとで並置できる — 横断スカラに黙って潰すことはしない．
+- **独立した StrongREJECT judge を 3 つ走らせる** — 2 つのルーブリックプロンプト（v1・v2）に加え fine-tuned（logit 期待値）judge の計 3 種を走らせ，その一致度を Kendall の一致係数 W で報告する．「StrongREJECT スコア」がどの実装に依存するかを放置しない．
 
-**ステータス:** Phase 1 は完了，Phase 2 — 制御反転・emulated なエージェント環境・環境種別を跨ぐ報告 — も概ね完了しており，残るは fine-tuned judge のみである．
+**ステータス:** Phase 1・Phase 2 とも完了 — 制御反転・emulated なエージェント環境・環境種別を跨ぐ報告・fine-tuned judge を全て実装済みである．
 
 ## セットアップ
 
@@ -40,7 +41,7 @@ cargo test --workspace
 
 - [docs/design.ja.md](docs/design.ja.md) — 動機・根拠・設計原則・責任ある利用・Phase 計画．
 - [docs/architecture.ja.md](docs/architecture.ja.md) — crate 構成と，環境型ベンチのために実装済みの制御反転設計．
-- [docs/usage.ja.md](docs/usage.ja.md) — submodule・cargo feature つきのビルドとテスト・CLI（`reliability` / `run` / `report` / `agentdojo`）．
+- [docs/usage.ja.md](docs/usage.ja.md) — submodule・cargo feature つきのビルドとテスト・CLI（`reliability` / `run` / `report` / `agentdojo` / `strongreject-judge`）．
 
 ## ライセンス
 

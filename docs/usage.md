@@ -47,6 +47,7 @@ The default build requires no network. Backends and sidecar plumbing are opt-in:
 - `pil-sidecar`: `sidecar` — enables the actual Python process launch (`tokio::process`).
 - `pil-bench-agentdojo`: `agentdojo` — gates the sidecar-driven live path (requires a real AgentDojo pip install and a tool-capable model), documented as `#[ignore]` integration tests and kept out of default CI.
 - `pil-cli`: `agentdojo-live` — the umbrella feature that turns on the whole live AgentDojo path. It pulls in `openai` (the OpenAI-compatible `pil-llm` backend), `pil-shim/shim`, `pil-sidecar/sidecar`, and `pil-bench-agentdojo/agentdojo`, and is what exposes the `pil agentdojo` subcommand.
+- `pil-cli`: `strongreject-judge` — gates the `pil strongreject-judge` subcommand, which scores externally-supplied `{prompt, response}` pairs with the fine-tuned StrongREJECT judge. It launches a Python sidecar synchronously via `std::process` and pulls in no network backend, so the default build stays network-free without it.
 
 Every one of these gates a networked or live path; the default build and `cargo test --workspace` stay network-free.
 
@@ -59,7 +60,7 @@ The Ollama backend requires `>= 0.12.11` (which added `top_logprobs`) and checks
 
 ## CLI
 
-`pil` has three subcommands in the default build (`reliability` / `run` / `report`), plus `agentdojo` when built with the `agentdojo-live` feature. Artifacts land in a timestamped `results/{subcommand}_YYYYMMDD_HHMMSS/`, always accompanied by a `provenance.json` recording the submodule pins, parameters, and timestamp. The global option `--repo-root <PATH>` selects the root containing `third_party/` (defaults to an upward search from the current directory).
+`pil` has three subcommands in the default build (`reliability` / `run` / `report`), plus `agentdojo` when built with the `agentdojo-live` feature and `strongreject-judge` when built with the `strongreject-judge` feature. Artifacts land in a timestamped `results/{subcommand}_YYYYMMDD_HHMMSS/`, always accompanied by a `provenance.json` recording the submodule pins, parameters, and timestamp. The global option `--repo-root <PATH>` selects the root containing `third_party/` (defaults to an upward search from the current directory).
 
 ### `pil reliability` — disclose judge reliability
 
@@ -122,3 +123,24 @@ cargo run -p pil-cli --features agentdojo-live -- agentdojo --suite banking --at
 ```
 
 The batch output feeds straight into `pil report` (for example an agentic injection-success rate reported with a confidence interval), and can be unioned with a static-prompt run under `--cross-env` as shown above.
+
+### `pil strongreject-judge` — score {prompt, response} pairs with the fine-tuned StrongREJECT judge
+
+Available only when built with the `strongreject-judge` feature. It scores externally-supplied `{forbidden_prompt, response}` pairs with the fine-tuned StrongREJECT judge (`qylu4156/strongreject-15k-v1`, a logit-expectation score) and writes a run directory (`trials.jsonl` / `cases.jsonl` / `run_meta.json` / `provenance.json`) that `pil report` reads directly — so its scores join rubric v1 / v2 in the StrongREJECT judge concordance. The base `google/gemma-2b` + LoRA adapter run in a thin Python sidecar (`crates/pil-metrics/python/score_dist.py`); the scoring math and the three-valued verdict (score-token-absent → Undecidable) stay in Rust.
+
+**Prerequisites:**
+
+- A Python virtualenv with `torch`, `transformers`, and `peft` installed (the CLI defaults to `.venv-strongreject/bin/python`; override with `--python`).
+- Hugging Face authentication: the base `google/gemma-2b` is a **gated** model, so you must accept its license and provide a token via `hf auth login` before first use.
+- The sidecar `crates/pil-metrics/python/score_dist.py` (shipped in this repository).
+- Building with the `strongreject-judge` feature.
+
+```bash
+cargo run -p pil-cli --features strongreject-judge -- strongreject-judge --input <pairs.json>
+```
+
+`<pairs.json>` is a JSON array of `{"forbidden_prompt", "response"}` objects. Flags:
+
+- `--input <PATH>`: the JSON array of `{forbidden_prompt, response}` pairs to score.
+- `--python <PATH>`: the sidecar Python interpreter (default `.venv-strongreject/bin/python`).
+- `--threshold <F>`: the binarization threshold (`score >= threshold` is Success; default `0.5`). The continuous score is always retained on the measurement regardless of the threshold.
