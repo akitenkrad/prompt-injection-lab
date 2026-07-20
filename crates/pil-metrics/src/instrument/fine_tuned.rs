@@ -38,11 +38,11 @@ use pil_core::{
 
 use super::{provider_error, render_template, Instrument, LogprobJudge, ScoreDistribution};
 
-/// fine-tuned 判定モデル（HuggingFace）の同一性．commit は Part 2 で GGUF/LoRA を固定する際に
-/// 確定する（現状はプレースホルダ）．
+/// fine-tuned 判定モデル（HuggingFace）の上流リポジトリ．
 pub const FINETUNED_UPSTREAM: &str = "qylu4156/strongreject-15k-v1";
-/// **プレースホルダ**の固定 SHA．実際の revision は Part 2 のモデル結線で確定・記録する．
-pub const FINETUNED_COMMIT: &str = "0000000000000000000000000000000000000000";
+/// 固定した HF revision（`qylu4156/strongreject-15k-v1` の commit）．Part 2 のモデル結線もこの
+/// revision を参照する．
+pub const FINETUNED_COMMIT: &str = "4bd893d32390d2cace4f067dc2e3ef5294fd78a2";
 /// HF リポジトリ上のモデル本体（LoRA アダプタ）．
 pub const FINETUNED_PATH: &str = "adapter_model.safetensors";
 

@@ -25,7 +25,8 @@ use pil_metrics::aggregate::{
     Z_95,
 };
 use pil_report::{
-    cross_env_disclosure, detect_duplicates, per_env_view, AsrPresentation, DUPLICATE_METHOD,
+    cross_env_disclosure, detect_duplicates, per_env_view, strongreject_judge_concordance,
+    AsrPresentation, DUPLICATE_METHOD,
 };
 
 use crate::commands::{make_results_dir, write_text, Provenance};
@@ -180,6 +181,36 @@ pub fn run(repo_root: &Path, run_dirs: &[PathBuf], cross_env: bool) -> Result<()
         json!(null)
     };
 
+    // --- StrongREJECT 判定器一致度（連続スコア Kendall W，§3.7） ---
+    writeln!(
+        out,
+        "\n## StrongREJECT 判定器一致度（rubric v1/v2 + fine-tuned の連続スコア Kendall W，§3.7）"
+    )?;
+    let judge_conc = strongreject_judge_concordance(&trials);
+    out.push_str(&indent(&judge_conc.render(), "  "));
+    let judge_conc_json = match &judge_conc.concordance {
+        Some(sc) => json!({
+            "group_w": sc.group.w,
+            "n_cases_used": sc.n_cases_used,
+            "n_cases_dropped": sc.n_cases_dropped,
+            "instruments": sc
+                .instruments
+                .iter()
+                .map(|i| format!("{} {}", i.name, i.version))
+                .collect::<Vec<_>>(),
+            "pairwise": sc
+                .pairwise
+                .iter()
+                .map(|(a, b, w)| json!({
+                    "a": format!("{} {}", a.name, a.version),
+                    "b": format!("{} {}", b.name, b.version),
+                    "w": w.w,
+                }))
+                .collect::<Vec<_>>(),
+        }),
+        None => json!(null),
+    };
+
     // --- union coverage（単一最良 vs union，§2.2） ---
     writeln!(
         out,
@@ -306,6 +337,7 @@ pub fn run(repo_root: &Path, run_dirs: &[PathBuf], cross_env: bool) -> Result<()
         "ks": ks,
         "single_shot_asr": single_json,
         "cross_env_disclosure": cross_env_json,
+        "judge_concordance": judge_conc_json,
         "union_coverage": union_json,
         "asr_curve": curve_json,
         "over_refusal": over_json,

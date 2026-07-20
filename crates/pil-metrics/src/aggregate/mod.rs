@@ -25,7 +25,10 @@ use serde::{Deserialize, Serialize};
 use pil_core::{AttackRef, CaseId, EnvKind, InstrumentRef, Trial, Verdict};
 
 pub use bootstrap::{bootstrap_ci, BootstrapMethod};
-pub use concordance::{instrument_concordance, kendall_w, InstrumentConcordance, KendallW};
+pub use concordance::{
+    instrument_concordance, kendall_w, score_concordance, strongreject_score_concordance,
+    InstrumentConcordance, KendallW, ScoreConcordance,
+};
 pub use interval::{
     clopper_pearson_interval, normal_cdf, normal_quantile, wilson_interval, ConfidenceInterval,
     Z_95,

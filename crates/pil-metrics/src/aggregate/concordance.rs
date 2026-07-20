@@ -220,6 +220,153 @@ pub fn instrument_concordance(trials: &[Trial]) -> Option<InstrumentConcordance>
     })
 }
 
+/// 連続スコアに基づく測定器一致度（DESIGN §3.7）．
+///
+/// [`InstrumentConcordance`] が二値 [`Verdict`] を評価者間の順位に載せるのに対し，本型は
+/// `Measurement.score`（例: StrongREJECT の `[0,1]` 連続スコア）そのものを順位化して
+/// [`kendall_w`] に載せる．`group` は全選択測定器のグループ一致係数，`pairwise` は測定器の
+/// 各対に対する一致係数（m=2 の Kendall W は `[0,1]` の一致度として妥当）である．
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScoreConcordance {
+    /// 全選択測定器を評価者とするグループ一致係数 W．
+    pub group: KendallW,
+    /// 測定器の各対 `(a, b)` に対する一致係数 W（m=2）．退化（分母 0）の対は除外する．
+    pub pairwise: Vec<(InstrumentRef, InstrumentRef, KendallW)>,
+    /// 一致度を測った測定器の一覧（順位ベクタの行に対応）．
+    pub instruments: Vec<InstrumentRef>,
+    /// 実際に W の計算に使った共通 Case 数（全測定器がスコアを持った Case）．
+    pub n_cases_used: usize,
+    /// 共通 Case のうち，いずれかの選択測定器が `Undecidable` かスコア欠落で除外した件数（§5.3）．
+    pub n_cases_dropped: usize,
+}
+
+/// 連続スコアに基づく測定器跨ぎ Kendall W を，共通 Case 上で計算する（DESIGN §3.7）．
+///
+/// [`instrument_concordance`] の二値版に対する**スコア版**の兄弟関数である．手順：
+///
+/// 1. `trials` に現れる測定器を [`distinct_instruments`] 相当の線形 dedup で一意化し，`select` を
+///    満たすものだけを選ぶ（2 未満なら `None`）．
+/// 2. Case ごとに，選択測定器それぞれの `Measurement.score` を集める（同一 Case を同一測定器で
+///    複数回測ったら**平均**を採る）．
+/// 3. **全選択測定器が測定した共通 Case（交差）**だけを対象にする．
+/// 4. 共通 Case のうち，いずれかの選択測定器の測定が `Undecidable` **または** `score == None` の
+///    Case は除外し件数を `n_cases_dropped` に保持する（スコアを持つ判定器のみ；§5.3）．
+/// 5. 残った Case で各測定器のスコア列（index 整合）を作り，[`kendall_w`] に載せてグループ W を出す．
+///    さらに測定器の各対について，その 2 本のスコア列だけを [`kendall_w`] に渡してペア別 W を出す．
+///
+/// `None` を返す条件：選択測定器が 2 未満，残った共通 Case が 2 未満，またはグループ W が未定義
+/// （全測定器が全 Case を同順位）．
+pub fn score_concordance(
+    trials: &[Trial],
+    select: impl Fn(&InstrumentRef) -> bool,
+) -> Option<ScoreConcordance> {
+    // distinct_instruments 相当の線形 dedup（InstrumentRef は Ord/Hash を持たない）で選択する．
+    let mut instruments: Vec<InstrumentRef> = Vec::new();
+    for t in trials {
+        for m in &t.measurements {
+            if select(&m.instrument) && !instruments.iter().any(|i| i == &m.instrument) {
+                instruments.push(m.instrument.clone());
+            }
+        }
+    }
+    if instruments.len() < 2 {
+        return None;
+    }
+    let k = instruments.len();
+
+    // 選択測定器ごとの Case 内集計．measured=測定の有無（交差判定），bad=Undecidable かスコア欠落．
+    #[derive(Clone)]
+    struct Cell {
+        measured: bool,
+        bad: bool,
+        sum: f64,
+        count: usize,
+    }
+    let empty = Cell {
+        measured: false,
+        bad: false,
+        sum: 0.0,
+        count: 0,
+    };
+
+    // CaseId は Ord なので BTreeMap で決定論的順序．
+    let mut by_case: BTreeMap<CaseId, Vec<Cell>> = BTreeMap::new();
+    for t in trials {
+        for meas in &t.measurements {
+            let Some(idx) = instruments.iter().position(|i| i == &meas.instrument) else {
+                continue;
+            };
+            let cell = &mut by_case
+                .entry(t.case.clone())
+                .or_insert_with(|| vec![empty.clone(); k])[idx];
+            cell.measured = true;
+            match (&meas.verdict, meas.score) {
+                // スコアを持つ判定（成功/失敗いずれでも連続スコアを使う）．
+                (Verdict::Success | Verdict::Failure, Some(s)) => {
+                    cell.sum += s;
+                    cell.count += 1;
+                }
+                // Undecidable もしくはスコア欠落は除外対象（三値の規律，§5.3）．
+                _ => cell.bad = true,
+            }
+        }
+    }
+
+    let mut rankings: Vec<Vec<f64>> = vec![Vec::new(); k];
+    let mut n_cases_used = 0usize;
+    let mut n_cases_dropped = 0usize;
+
+    for cells in by_case.values() {
+        // 全選択測定器が測定したか（交差）．
+        if !cells.iter().all(|c| c.measured) {
+            continue;
+        }
+        // いずれかが Undecidable/スコア欠落なら除外し件数を保持する（§5.3）．
+        if cells.iter().any(|c| c.bad) {
+            n_cases_dropped += 1;
+            continue;
+        }
+        for (idx, c) in cells.iter().enumerate() {
+            // measured かつ !bad なので count>=1 が保証される．
+            rankings[idx].push(c.sum / c.count as f64);
+        }
+        n_cases_used += 1;
+    }
+
+    if n_cases_used < 2 {
+        return None;
+    }
+
+    let group = kendall_w(&rankings)?;
+
+    // ペア別一致度：各非順序対のスコア列 2 本だけで Kendall W を出す（退化した対は除外）．
+    let mut pairwise: Vec<(InstrumentRef, InstrumentRef, KendallW)> = Vec::new();
+    for a in 0..k {
+        for b in (a + 1)..k {
+            if let Some(w) = kendall_w(&[rankings[a].clone(), rankings[b].clone()]) {
+                pairwise.push((instruments[a].clone(), instruments[b].clone(), w));
+            }
+        }
+    }
+
+    Some(ScoreConcordance {
+        group,
+        pairwise,
+        instruments,
+        n_cases_used,
+        n_cases_dropped,
+    })
+}
+
+/// StrongREJECT 3 判定器（rubric v1 / rubric v2 / fine-tuned）の連続スコア一致度（DESIGN §3.7）．
+///
+/// §3.7 の「StrongREJECT の judge は 2 つある」という懸念を**3 つ**へ拡張し，StrongREJECT スコアが
+/// どの実装（judge）に依存するかを定量化する．選択条件は測定器名の接頭辞 `"strongreject"`
+/// （`strongreject-rubric` / `strongreject-finetuned` が該当）．2 種未満しか無ければ `None`．
+pub fn strongreject_score_concordance(trials: &[Trial]) -> Option<ScoreConcordance> {
+    score_concordance(trials, |i| i.name.starts_with("strongreject"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -437,5 +584,204 @@ mod tests {
         let json = serde_json::to_string(&k).unwrap();
         let back: KendallW = serde_json::from_str(&json).unwrap();
         assert_eq!(k, back);
+    }
+
+    // --- score_concordance: 連続スコアの合成 Trial ---
+
+    /// 1 Case を，指定した (測定器, verdict, score) 群で測る Trial を作る．
+    fn trial_scored(case: &str, cells: &[(&InstrumentRef, Verdict, Option<f64>)]) -> Trial {
+        Trial {
+            case: cid(case),
+            attempt: 1,
+            model: ModelRef::new("ollama", "m", None),
+            attack: AttackRef::identity(),
+            response: resp(),
+            measurements: cells
+                .iter()
+                .map(|(i, v, s)| Measurement {
+                    verdict: v.clone(),
+                    score: *s,
+                    instrument: (*i).clone(),
+                    raw: String::new(),
+                })
+                .collect(),
+        }
+    }
+
+    /// スコア付き成功測定を作る簡便関数．
+    fn scored(score: f64) -> (Verdict, Option<f64>) {
+        (Verdict::Success, Some(score))
+    }
+
+    fn find_pair<'a>(
+        sc: &'a ScoreConcordance,
+        a: &InstrumentRef,
+        b: &InstrumentRef,
+    ) -> &'a KendallW {
+        sc.pairwise
+            .iter()
+            .find_map(|(x, y, w)| {
+                if (x == a && y == b) || (x == b && y == a) {
+                    Some(w)
+                } else {
+                    None
+                }
+            })
+            .expect("pair present")
+    }
+
+    /// (a) 3 判定器が同一のスコア順位 → グループ W=1.0 かつ全ペア W=1.0．
+    #[test]
+    fn score_concordance_identical_rankings_is_one() {
+        let v1 = inst("strongreject-rubric", "v1");
+        let v2 = inst("strongreject-rubric", "v2");
+        let ft = inst("strongreject-finetuned", "15k-v1");
+        let scores = [0.1, 0.4, 0.6, 0.9];
+        let trials: Vec<Trial> = scores
+            .iter()
+            .enumerate()
+            .map(|(idx, &s)| {
+                let (sv, ss) = scored(s);
+                trial_scored(
+                    &format!("c{idx}"),
+                    &[(&v1, sv.clone(), ss), (&v2, sv.clone(), ss), (&ft, sv, ss)],
+                )
+            })
+            .collect();
+        let sc = strongreject_score_concordance(&trials).expect("defined");
+        assert_eq!(sc.instruments.len(), 3);
+        assert_eq!(sc.n_cases_used, 4);
+        assert_eq!(sc.n_cases_dropped, 0);
+        assert_eq!(sc.group.w, 1.0);
+        assert_eq!(sc.pairwise.len(), 3);
+        for (_, _, w) in &sc.pairwise {
+            assert_eq!(w.w, 1.0);
+        }
+    }
+
+    /// (b) 1 判定器が順位を反転 → グループ W が下がる（手計算値）．
+    /// v1,v2 昇順 [.1,.2,.3,.4]，ft 降順 [.4,.3,.2,.1]．列和=[6,7,8,9]，S=5，分母=540，W=60/540=1/9．
+    /// ペア: v1↔v2=1.0，v1↔ft=0.0，v2↔ft=0.0．
+    #[test]
+    fn score_concordance_one_inverts_lowers_group_w() {
+        let v1 = inst("strongreject-rubric", "v1");
+        let v2 = inst("strongreject-rubric", "v2");
+        let ft = inst("strongreject-finetuned", "15k-v1");
+        let asc = [0.1, 0.2, 0.3, 0.4];
+        let desc = [0.4, 0.3, 0.2, 0.1];
+        let trials: Vec<Trial> = (0..4)
+            .map(|idx| {
+                trial_scored(
+                    &format!("c{idx}"),
+                    &[
+                        (&v1, Verdict::Success, Some(asc[idx])),
+                        (&v2, Verdict::Success, Some(asc[idx])),
+                        (&ft, Verdict::Success, Some(desc[idx])),
+                    ],
+                )
+            })
+            .collect();
+        let sc = strongreject_score_concordance(&trials).expect("defined");
+        assert_eq!(sc.n_cases_used, 4);
+        assert!(close(sc.group.w, 1.0 / 9.0), "group W={}", sc.group.w);
+        assert!(close(find_pair(&sc, &v1, &v2).w, 1.0));
+        assert!(close(find_pair(&sc, &v1, &ft).w, 0.0));
+        assert!(close(find_pair(&sc, &v2, &ft).w, 0.0));
+    }
+
+    /// (c) 1 判定器が Undecidable/スコア欠落の Case は除外し n_cases_dropped=1．
+    #[test]
+    fn score_concordance_drops_undecidable_or_scoreless_case() {
+        let v1 = inst("strongreject-rubric", "v1");
+        let v2 = inst("strongreject-rubric", "v2");
+        let ft = inst("strongreject-finetuned", "15k-v1");
+        let good = |c: &str, s: f64| {
+            trial_scored(
+                c,
+                &[
+                    (&v1, Verdict::Success, Some(s)),
+                    (&v2, Verdict::Success, Some(s)),
+                    (&ft, Verdict::Success, Some(s)),
+                ],
+            )
+        };
+        let trials = vec![
+            good("c1", 0.2),
+            good("c2", 0.8),
+            // c3: ft が Undecidable（スコア None）→ 除外
+            trial_scored(
+                "c3",
+                &[
+                    (&v1, Verdict::Success, Some(0.5)),
+                    (&v2, Verdict::Success, Some(0.5)),
+                    (&ft, undec(), None),
+                ],
+            ),
+        ];
+        let sc = strongreject_score_concordance(&trials).expect("defined");
+        assert_eq!(sc.n_cases_used, 2);
+        assert_eq!(sc.n_cases_dropped, 1);
+    }
+
+    /// (d) StrongREJECT 判定器が 2 種未満 → None．
+    #[test]
+    fn score_concordance_needs_two_sr_judges() {
+        let v1 = inst("strongreject-rubric", "v1");
+        let trials = vec![
+            trial_scored("c1", &[(&v1, Verdict::Success, Some(0.2))]),
+            trial_scored("c2", &[(&v1, Verdict::Success, Some(0.8))]),
+        ];
+        assert!(strongreject_score_concordance(&trials).is_none());
+    }
+
+    /// 非 StrongREJECT 測定器は選択されない（instruments に含まれない）．
+    #[test]
+    fn score_concordance_excludes_non_sr_instrument() {
+        let v1 = inst("strongreject-rubric", "v1");
+        let v2 = inst("strongreject-rubric", "v2");
+        let other = inst("string-match", "v1");
+        let trials: Vec<Trial> = (0..3)
+            .map(|idx| {
+                let s = 0.2 + 0.3 * idx as f64;
+                trial_scored(
+                    &format!("c{idx}"),
+                    &[
+                        (&v1, Verdict::Success, Some(s)),
+                        (&v2, Verdict::Success, Some(s)),
+                        (&other, Verdict::Success, Some(1.0 - s)),
+                    ],
+                )
+            })
+            .collect();
+        let sc = strongreject_score_concordance(&trials).expect("defined");
+        assert_eq!(sc.instruments.len(), 2);
+        assert!(sc
+            .instruments
+            .iter()
+            .all(|i| i.name.starts_with("strongreject")));
+    }
+
+    #[test]
+    fn score_concordance_serde_roundtrip() {
+        let v1 = inst("strongreject-rubric", "v1");
+        let v2 = inst("strongreject-rubric", "v2");
+        let trials: Vec<Trial> = (0..3)
+            .map(|idx| {
+                let s = 0.2 + 0.3 * idx as f64;
+                trial_scored(
+                    &format!("c{idx}"),
+                    &[
+                        (&v1, Verdict::Success, Some(s)),
+                        (&v2, Verdict::Success, Some(s)),
+                    ],
+                )
+            })
+            .collect();
+        let sc = strongreject_score_concordance(&trials).expect("defined");
+        let json = serde_json::to_string(&sc).unwrap();
+        let back: ScoreConcordance = serde_json::from_str(&json).unwrap();
+        assert_eq!(sc.instruments, back.instruments);
+        assert_eq!(sc.n_cases_used, back.n_cases_used);
+        assert!((sc.group.w - back.group.w).abs() < 1e-12);
     }
 }
