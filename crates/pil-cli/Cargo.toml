@@ -32,6 +32,14 @@ agentdojo-live = [
 # 有効化する（P2-M5）．sidecar は std::process で直接起動するため tokio/process は不要で，
 # 既定ビルド（network-free）はこのサブコマンドを一切引き込まない（§6.1）．
 strongreject-judge = []
+# StrongREJECT 3 判定器（rubric v1 / rubric v2 / fine-tuned）の実データ concordance を回す
+# `strongreject-concordance` サブコマンドを有効化する（DESIGN §3.7）．LIVE gpt-oss（openai 互換面）で
+# 応答生成と rubric 判定を行い，fine-tuned は sidecar（strongreject-judge の `score_batch`）を再利用する．
+# openai バックエンド（reqwest）を引き込むため既定ビルドには含めない（§6.1）．
+strongreject-concordance = [
+    "strongreject-judge",
+    "openai",
+]
 
 [dependencies]
 pil-core.workspace = true

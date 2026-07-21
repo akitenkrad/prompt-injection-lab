@@ -67,6 +67,9 @@ enum Command {
     /// StrongREJECT fine-tuned judge を python sidecar 経由で回す（feature `strongreject-judge`）．
     #[cfg(feature = "strongreject-judge")]
     StrongrejectJudge(commands::strongreject_judge::StrongrejectJudgeArgs),
+    /// StrongREJECT 3 判定器の実データ concordance をライブで回す（feature `strongreject-concordance`）．
+    #[cfg(feature = "strongreject-concordance")]
+    StrongrejectConcordance(commands::strongreject_concordance::StrongrejectConcordanceArgs),
 }
 
 fn main() -> Result<()> {
@@ -98,5 +101,13 @@ fn main() -> Result<()> {
         // sidecar は std::process で同期起動するため tokio ランタイムは不要．
         #[cfg(feature = "strongreject-judge")]
         Command::StrongrejectJudge(args) => commands::strongreject_judge::run(&repo_root, &args),
+        // ライブ生成 + rubric 判定は非同期（openai 互換面への HTTP）．multi-thread ランタイムで回す．
+        #[cfg(feature = "strongreject-concordance")]
+        Command::StrongrejectConcordance(args) => {
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()?;
+            runtime.block_on(commands::strongreject_concordance::run(&repo_root, &args))
+        }
     }
 }

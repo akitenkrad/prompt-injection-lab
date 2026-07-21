@@ -25,7 +25,9 @@ pub mod string_match;
 pub use fine_tuned::{expected_score, FineTunedRubric};
 pub use harmbench_cls::HarmBenchCls;
 pub use minhash::{CopyrightMinHash, CopyrightReference, MinHash, MinHasher};
-pub use rubric::{Rubric, RubricVersion};
+pub use rubric::{
+    parse_rubric_measurement, render_rubric_prompt, rubric_reference, Rubric, RubricVersion,
+};
 pub use string_match::RefusalMatch;
 
 use pil_core::{Case, InstrumentRef, Measurement, Response, UndecidableReason, Verdict};

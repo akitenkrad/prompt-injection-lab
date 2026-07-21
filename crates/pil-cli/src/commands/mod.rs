@@ -8,6 +8,8 @@ pub mod agentdojo;
 pub mod reliability;
 pub mod report;
 pub mod run;
+#[cfg(feature = "strongreject-concordance")]
+pub mod strongreject_concordance;
 #[cfg(feature = "strongreject-judge")]
 pub mod strongreject_judge;
 

@@ -57,7 +57,7 @@ struct JudgeItem {
 }
 
 /// `crates/pil-metrics/python/score_dist.py` の絶対パス（repo_root 相対で確定する）．
-fn score_dist_script(repo_root: &Path) -> PathBuf {
+pub(crate) fn score_dist_script(repo_root: &Path) -> PathBuf {
     repo_root.join("crates/pil-metrics/python/score_dist.py")
 }
 
@@ -65,7 +65,7 @@ fn score_dist_script(repo_root: &Path) -> PathBuf {
 ///
 /// judge_model は判定モデル（`qylu4156/strongreject-15k-v1`）を指す ModelRef．source は
 /// 上流 HF リポジトリの固定 revision（[`FINETUNED_COMMIT`]）．
-fn finetuned_instrument_ref() -> InstrumentRef {
+pub(crate) fn finetuned_instrument_ref() -> InstrumentRef {
     InstrumentRef {
         name: INSTRUMENT_NAME.into(),
         version: INSTRUMENT_VERSION.into(),
@@ -162,7 +162,7 @@ pub fn score_batch(
 }
 
 /// 採点分布を短い文字列に直列化する（`Measurement.raw` 用；事後再解析のため保持）．
-fn serialize_dist(dist: &ScoreDistribution) -> String {
+pub(crate) fn serialize_dist(dist: &ScoreDistribution) -> String {
     let mut out = String::from("dist=[");
     for (i, (token, logprob)) in dist.entries.iter().enumerate() {
         if i > 0 {
