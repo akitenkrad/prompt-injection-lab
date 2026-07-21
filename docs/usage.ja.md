@@ -48,6 +48,7 @@ cargo fmt --check
 - `pil-bench-agentdojo`: `agentdojo` — sidecar 駆動のライブ経路（実 AgentDojo の pip インストールと実ツール対応モデルを要する）を gate する．`#[ignore]` の統合テストとして文書化し，既定 CI から外す．
 - `pil-cli`: `agentdojo-live` — ライブ AgentDojo 経路全体を有効化する統括 feature．`openai`（OpenAI 互換 `pil-llm` バックエンド）・`pil-shim/shim`・`pil-sidecar/sidecar`・`pil-bench-agentdojo/agentdojo` を引き込み，`pil agentdojo` サブコマンドを露出する．
 - `pil-cli`: `strongreject-judge` — fine-tuned StrongREJECT judge で外部供給の `{prompt, response}` ペアを採点する `pil strongreject-judge` サブコマンドを gate する．sidecar は `std::process` で同期起動し，ネットワークバックエンドは一切引き込まないため，無効時の既定ビルドは network-free のままである．
+- `pil-cli`: `strongreject-concordance` — 3 つの StrongREJECT judge（rubric v1 / v2 + fine-tuned）が Kendall の一致係数 W で一致するかを測る `pil strongreject-concordance` サブコマンドを gate する．2 つの rubric 判定は**ライブ**の judge モデルで採点するため，`strongreject-judge`（fine-tuned sidecar）に加えて `openai`（OpenAI 互換 `pil-llm` バックエンド）を有効化する．無効時の既定ビルドは network-free のままである．
 
 これらはいずれもネットワーク／ライブ経路を gate する．既定ビルドと `cargo test --workspace` は network-free のままである．
 
@@ -60,7 +61,7 @@ Ollama バックエンドは `top_logprobs`（v0.12.11 で対応）のため `>=
 
 ## CLI
 
-`pil` は既定ビルドで 3 つのサブコマンド（`reliability` / `run` / `report`）を持ち，`agentdojo-live` feature つきでビルドすると `agentdojo` が，`strongreject-judge` feature つきでビルドすると `strongreject-judge` が加わる．成果物はタイムスタンプ付きの `results/{subcommand}_YYYYMMDD_HHMMSS/` に落ち，submodule pin・パラメータ・タイムスタンプを刻んだ `provenance.json` を必ず同梱する．グローバルオプション `--repo-root <PATH>` で `third_party/` を含むルートを指定できる（省略時は CWD から上方探索）．
+`pil` は既定ビルドで 3 つのサブコマンド（`reliability` / `run` / `report`）を持ち，`agentdojo-live` feature つきでビルドすると `agentdojo` が，`strongreject-judge` feature つきでビルドすると `strongreject-judge` が，`strongreject-concordance` feature つきでビルドすると `strongreject-concordance` が加わる．成果物はタイムスタンプ付きの `results/{subcommand}_YYYYMMDD_HHMMSS/` に落ち，submodule pin・パラメータ・タイムスタンプを刻んだ `provenance.json` を必ず同梱する．グローバルオプション `--repo-root <PATH>` で `third_party/` を含むルートを指定できる（省略時は CWD から上方探索）．
 
 ### `pil reliability` — judge 信頼性の開示
 
@@ -144,3 +145,38 @@ cargo run -p pil-cli --features strongreject-judge -- strongreject-judge --input
 - `--input <PATH>`: 採点対象の `{forbidden_prompt, response}` ペアを並べた JSON 配列．
 - `--python <PATH>`: sidecar 用 Python インタプリタ（既定 `.venv-strongreject/bin/python`）．
 - `--threshold <F>`: 二値化しきい値（`score >= threshold` を Success とする；既定 `0.5`）．連続スコアはしきい値によらず必ず測定へ残す．
+
+### `pil strongreject-concordance` — 3 つの StrongREJECT judge の一致を測る
+
+`strongreject-concordance` feature つきビルドでのみ利用できる（この feature は `strongreject-judge` + `openai` を有効化する）．**3 つ**の StrongREJECT judge — rubric v1・rubric v2（いずれも OpenAI 互換バックエンド経由の**ライブ** gpt-oss judge で採点）・fine-tuned judge（ローカルの Python sidecar）— が**同一の応答**に一致するかを，連続スコア上の Kendall の一致係数 W（group + pairwise）で測る．判定は常に元の goal で行い，書き出す run ディレクトリは 3 判定器のスコアを StrongREJECT 一致度に束ねる．
+
+2 つのモードを持つ：
+
+- **生成モード**（既定）— StrongREJECT のプロンプトを読み，ライブモデル（Ollama の gpt-oss，`--attack` で任意に jailbreak）で応答を生成してから，各応答を 3 判定器で判定する．**1 Case あたり ~3 回の LLM 呼び出し**（生成 1 + rubric 判定 2）で，fine-tuned はローカル sidecar 1 回の batch である．注記：safety 学習済みモデルは有害プロンプトの多くを拒否するため，生成応答はスコアの散らばりを欠きがちで一致度が退化しうる．判定器の（不）一致を実際に観察するには `--responses` で採点済み応答を与えること．
+- **応答モード**（`--responses <json>`）— 外部供給の `{"forbidden_prompt", "response"}` ペア（`strongreject-judge --input` と同形の JSON）を判定する（生成なし）．2 つの rubric 判定にはなお gpt-oss を使う．判定器が一致するか見るには，拒否 → 部分的 → 応諾にわたる応答を与えること．
+
+**前提条件:**
+
+- `strongreject-judge` と同じもの：`torch`・`transformers`・`peft` を入れた Python 仮想環境，および Hugging Face 認証（fine-tuned judge の base `google/gemma-2b` が **gated** モデルのため，ライセンスに同意し `hf auth login` を実行）．
+- 加えてライブ judge モデル：ライブ rubric 判定のため，capable なモデル（例 `gpt-oss:20b`）を配信中の Ollama．
+- `strongreject-concordance` feature つきビルド．無効時の既定ビルドは network-free のままである．
+
+フラグ:
+
+- `--responses <PATH>`: 生成せず判定する `{"forbidden_prompt", "response"}` ペアの JSON 配列（応答モード）．省略時は生成モードで動く．
+- `--limit <N>`: StrongREJECT プロンプトの先頭からの件数（生成モードのみ；既定 `10`）．
+- `--model <TAG>`: 生成と rubric 判定に使うライブモデルタグ（既定 `gpt-oss:20b`）．
+- `--ollama-base <URL>`: OpenAI 互換 base URL（既定 `http://localhost:11434/v1`）．
+- `--api-key <KEY>`: プロバイダへ送る API 鍵（既定 `ollama`；Ollama はダミー値で可）．
+- `--python <PATH>`: fine-tuned sidecar 用 Python インタプリタ（既定 `.venv-strongreject/bin/python`）．
+- `--threshold <F>`: fine-tuned の二値化しきい値（既定 `0.5`）．
+- `--max-tokens <N>`: 生成／rubric 判定の生成上限トークン数．
+- `--attack <NAME>`: **生成**プロンプトにのみ当てる jailbreak（既定 `identity`；有効値 `identity` / `base64` / `leetspeak` / `refusal_suppression` / `translate:<lang>` / `roleplay:<tpl>`）．判定は常に元の goal で行う．
+
+```bash
+# Judge externally-supplied graded responses with all three judges
+cargo run -p pil-cli --features strongreject-concordance -- strongreject-concordance --responses <graded.json> --max-tokens 2048
+
+# Generation mode with a jailbreak applied to the generation prompt
+cargo run -p pil-cli --features strongreject-concordance -- strongreject-concordance --limit 10 --attack refusal_suppression --max-tokens 2048
+```

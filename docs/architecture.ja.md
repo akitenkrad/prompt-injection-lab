@@ -19,7 +19,7 @@ workspace は `pil-*` crate の集合である（`pil-` = **p**rompt-**i**njecti
 | `pil-report` | run 成果物からの集計：undecidable 件数を併記した信頼区間・union coverage・多試行 ASR・過剰拒否・`ContentKey` による非独立性の自動検出．**`EnvKind` ごとの ASR を並置**し，明示的な `--cross-env` 指定時のみ横断プールスカラを警告および **Kendall の一致係数 W** とともに出す．複数の `--run` ディレクトリを受け取り union する． | ● |
 | `pil-shim` | OpenAI 互換ローカルシム（制御の反転）．OpenAI 互換エンドポイントを立て，外部 Python ベンチの `base_url` をそこへ向けさせる．OpenAI ⇄ `pil-llm` の純変換は feature 非依存で単体テスト可能とし，HTTP サーバ（axum/tokio）は `shim` feature の裏に置く．エージェント型ベンチに必要な **tool-calling passthrough**（`tools` / `tool_calls` / `developer` ロール）を持つ． | ● |
 | `pil-sidecar` | Python sidecar 起動基盤（native-first）．「測定値を変えないグルー」— プロセス起動・環境変数注入・入出力正規化・provenance —を Rust に集約し，Python 側は薄い殻に留める．シムの `base_url` を `OPENAI_BASE_URL`（とダミーの `OPENAI_API_KEY`）に注入し，Python の OpenAI 互換クライアントを単一の `pil-llm` 経路へ routing する．実際のプロセス起動は `sidecar` feature の裏に置く． | ● |
-| `pil-cli` | `pil` バイナリ（`reliability` / `run` / `report`，加えて `agentdojo-live` feature の裏の `agentdojo`，`strongreject-judge` feature の裏の `strongreject-judge`）． | ● |
+| `pil-cli` | `pil` バイナリ（`reliability` / `run` / `report`，加えて `agentdojo-live` feature の裏の `agentdojo`，`strongreject-judge` feature の裏の `strongreject-judge`，`strongreject-concordance` feature の裏の `strongreject-concordance` — rubric v1 / v2 + fine-tuned judge のライブ 3 判定器 StrongREJECT 一致度）． | ● |
 
 上流ローダは native Rust で持ち，上流の Python ローダ（`main` ブランチや個人アカウントの raw URL をハードコード取得する）は一切経由しない．これにより SHA 固定が実効化され，「どの SHA の何行目か」が全 `Case` に保証される．データの読み取り・正規化・`SourceRef` 付与はグルーであり，Rust に置いても測定値は変わらない．
 
