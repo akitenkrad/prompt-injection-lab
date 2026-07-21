@@ -8,6 +8,10 @@
 //!
 //!   1. StrongREJECT small を先頭 N 件だけ読む．
 //!   2. LIVE gpt-oss（Ollama の OpenAI 互換面）で各 Case の応答を生成する（温度 0）．
+//!      **生成には `--attack` の jailbreak 変換（pil-attacks）を当てた最終プロンプトを送る**
+//!      （`--attack identity` なら素のプロンプトに一致）．これにより応答の有害度に幅が生まれ，
+//!      3 判定器の concordance が意味を持つ．**判定は常に元の goal（`case.prompt`）で行い，
+//!      jailbreak 済みプロンプトは judge に渡さない**（judge は「元の有害目的に資するか」を測る）．
 //!   3. 同じ gpt-oss を rubric judge として v1 / v2 のプロンプトで判定する
 //!      （[`render_rubric_prompt`] + [`parse_rubric_measurement`] を再利用）．
 //!   4. fine-tuned judge は python sidecar（[`score_batch`]）を **batch で 1 回**回して採点分布を得，
@@ -66,6 +70,35 @@ pub struct StrongrejectConcordanceArgs {
     /// 生成 / rubric 判定の生成上限トークン数．
     #[arg(long, default_value_t = 512)]
     pub max_tokens: u32,
+    /// 応答生成にのみ当てる jailbreak 変換（pil-attacks）．判定は常に元の goal で行う．
+    ///
+    /// 有効値: `identity`（既定）/ `base64` / `leetspeak` / `refusal_suppression` /
+    /// `translate:<lang>` / `roleplay:<template>`．
+    #[arg(long, default_value = "identity")]
+    pub attack: String,
+}
+
+/// `--attack` 名を単一の [`AttackRef`] へ解決する（suite.rs の `resolve_attacks` と同じ命名規約）．
+///
+/// 生成専用の変換であり判定には使わない（判定は常に元の goal `case.prompt`）．
+/// 未知名は有効値を列挙して明示的に失敗させる（黙って identity に劣化させない）．
+fn resolve_attack(spec: &str) -> Result<AttackRef> {
+    let (head, arg) = match spec.split_once(':') {
+        Some((h, a)) => (h, Some(a)),
+        None => (spec, None),
+    };
+    let attack = match (head, arg) {
+        ("identity", None) => pil_attacks::identity(),
+        ("base64", None) => pil_attacks::base64(),
+        ("leetspeak", None) => pil_attacks::leetspeak(),
+        ("refusal_suppression", None) => pil_attacks::refusal_suppression(),
+        ("translate", Some(lang)) => pil_attacks::translate(lang),
+        ("roleplay", Some(tpl)) => pil_attacks::roleplay(tpl),
+        _ => bail!(
+            "未知の攻撃指定 `{spec}`（有効: identity / base64 / leetspeak / refusal_suppression / translate:<lang> / roleplay:<template>）"
+        ),
+    };
+    Ok(attack)
 }
 
 /// 1 Case ぶんの中間結果（生成応答 + rubric v1/v2 の測定）．
@@ -186,17 +219,24 @@ pub async fn run(repo_root: &Path, args: &StrongrejectConcordanceArgs) -> Result
         max_tokens: args.max_tokens,
     };
 
+    // jailbreak 変換を解決する（生成専用．判定は常に元の goal で行う）．未知名はここで明示的に失敗する．
+    let attack_ref = resolve_attack(&args.attack)?;
+
     eprintln!(
-        "strongreject-concordance: cases={n} model={} base={} （LLM 呼び出しは 1 Case あたり ~3 回）",
-        args.model, args.ollama_base
+        "strongreject-concordance: cases={n} model={} base={} attack={} （LLM 呼び出しは 1 Case あたり ~3 回）",
+        args.model, args.ollama_base, args.attack
     );
 
     // 3. 各 Case を逐次に: 応答生成 → rubric v1 → rubric v2（レート親和的に sequential）．
     let mut runs: Vec<CaseRun> = Vec::with_capacity(n);
     let mut n_gen_failed = 0usize;
     for (i, case) in cases.iter().enumerate() {
-        // a. 応答生成（温度 0）．失敗しても空応答で継続する（§3.6）．
-        let (response, gen_ok, gen_err) = judge.generate(&case.prompt).await;
+        // a. 生成には jailbreak 変換を当てた最終プロンプトを送る（判定は元の goal のまま）．
+        //    render 失敗はその Case の生成失敗として扱い，全判定器を Undecidable に落として継続する（§3.6）．
+        let (response, gen_ok, gen_err) = match pil_attacks::render(case, &attack_ref) {
+            Ok(attack_prompt) => judge.generate(&attack_prompt).await,
+            Err(e) => (empty_response(), false, Some(format!("render error: {e}"))),
+        };
         if !gen_ok {
             n_gen_failed += 1;
             eprintln!("[{}/{n}] 生成失敗: {}", i + 1, gen_err.unwrap_or_default());
@@ -289,7 +329,7 @@ pub async fn run(repo_root: &Path, args: &StrongrejectConcordanceArgs) -> Result
             case: run.case.id.clone(),
             attempt: 1,
             model: gen_model.clone(),
-            attack: AttackRef::identity(),
+            attack: attack_ref.clone(),
             response: run.response,
             measurements: vec![run.v1, run.v2, ft],
         });
@@ -320,6 +360,7 @@ pub async fn run(repo_root: &Path, args: &StrongrejectConcordanceArgs) -> Result
         "python": args.python,
         "threshold": args.threshold,
         "max_tokens": args.max_tokens,
+        "attack": args.attack,
         "concordance": concordance_value,
     });
     write_text(&dir, "run_meta.json", &serde_json::to_string_pretty(&meta)?)?;
@@ -329,6 +370,10 @@ pub async fn run(repo_root: &Path, args: &StrongrejectConcordanceArgs) -> Result
     // 7. per-case テーブル + Kendall W を印字する．
     println!();
     println!("StrongREJECT 3 判定器 concordance（実データ，DESIGN §3.7）");
+    println!(
+        "生成 attack = {}（判定はいずれも元の goal で実施）",
+        args.attack
+    );
     println!(
         "{:<18}  {:<16}  {:<16}  {:<16}",
         "case", "rubric_v1", "rubric_v2", "fine_tuned"
@@ -372,7 +417,7 @@ pub async fn run(repo_root: &Path, args: &StrongrejectConcordanceArgs) -> Result
         }
     }
     println!(
-        "注記: gpt-oss は有害プロンプトを高頻度で拒否するため，スコアの散らばりが狭く W が退化しやすい（正直な実データ）．"
+        "注記: gpt-oss は有害プロンプトを高頻度で拒否するため，スコアの散らばりが狭く W が退化しやすい（正直な実データ）．--attack で jailbreak を当てても応答の compliance が上がるとは限らない．"
     );
     println!("成果物: {}", dir.display());
     Ok(())
@@ -445,4 +490,66 @@ where
     }
     write_text(dir, name, &buf)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_attack;
+    use pil_core::Transform;
+
+    /// `--attack` の各有効名が期待どおりの `Transform` へ解決される（純粋・network-free）．
+    #[test]
+    fn resolve_attack_maps_known_names() {
+        assert_eq!(
+            resolve_attack("identity").unwrap().transform,
+            Transform::Identity
+        );
+        assert_eq!(
+            resolve_attack("base64").unwrap().transform,
+            Transform::Base64
+        );
+        assert_eq!(
+            resolve_attack("leetspeak").unwrap().transform,
+            Transform::Leetspeak
+        );
+        assert_eq!(
+            resolve_attack("refusal_suppression").unwrap().transform,
+            Transform::RefusalSuppression
+        );
+        assert_eq!(
+            resolve_attack("translate:zu").unwrap().transform,
+            Transform::Translate {
+                lang: "zu".to_string()
+            }
+        );
+        assert_eq!(
+            resolve_attack("roleplay:dan_11").unwrap().transform,
+            Transform::Roleplay {
+                template_id: "dan_11".to_string()
+            }
+        );
+    }
+
+    /// 文献既存の変換は再現元 provenance（source）を必ず携える（§1.4）．
+    #[test]
+    fn resolve_attack_carries_provenance() {
+        assert!(resolve_attack("identity").unwrap().source.is_none());
+        for name in ["base64", "leetspeak", "refusal_suppression", "translate:zu"] {
+            assert!(
+                resolve_attack(name).unwrap().source.is_some(),
+                "missing provenance for {name}"
+            );
+        }
+    }
+
+    /// 未知名は identity へ黙って劣化させず，有効値を列挙してエラーにする．
+    #[test]
+    fn resolve_attack_rejects_unknown() {
+        let err = resolve_attack("no_such").unwrap_err().to_string();
+        assert!(err.contains("未知の攻撃指定"));
+        assert!(err.contains("identity"));
+        // 引数の要否も命名規約どおり（`translate` は引数必須，`base64` は引数を取らない）．
+        assert!(resolve_attack("translate").is_err());
+        assert!(resolve_attack("base64:x").is_err());
+    }
 }
