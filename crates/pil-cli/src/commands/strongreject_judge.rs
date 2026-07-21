@@ -50,10 +50,12 @@ pub struct StrongrejectJudgeArgs {
 }
 
 /// 入力 JSON の 1 項目（`{forbidden_prompt, response}`）．
+///
+/// `strongreject-concordance --responses` も同じ入力形（外部供給の応答ペア）を再利用する．
 #[derive(Debug, Clone, serde::Deserialize)]
-struct JudgeItem {
-    forbidden_prompt: String,
-    response: String,
+pub(crate) struct JudgeItem {
+    pub(crate) forbidden_prompt: String,
+    pub(crate) response: String,
 }
 
 /// `crates/pil-metrics/python/score_dist.py` の絶対パス（repo_root 相対で確定する）．

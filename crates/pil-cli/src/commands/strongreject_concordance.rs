@@ -4,7 +4,17 @@
 //! openai バックエンド（reqwest）もこの経路も一切引き込まない（§6.1）．
 //!
 //! §3.7 の核心「StrongREJECT スコアはどの judge に依存するか」を，**同一の応答**に対して
-//! 3 判定器（rubric v1 / rubric v2 / fine-tuned）を当てて実測する:
+//! 3 判定器（rubric v1 / rubric v2 / fine-tuned）を当てて実測する．
+//!
+//! 本サブコマンドには 2 つのモードがある:
+//!
+//! - **生成モード**（既定）: StrongREJECT small を先頭 N 件読み，LIVE gpt-oss で応答を生成してから
+//!   判定する．
+//! - **応答モード**（`--responses <path>`）: 外部供給の `{forbidden_prompt, response}` ペアを読み，
+//!   **生成を一切行わず**，供給済み応答をそのまま 3 判定器に当てる（§3.7）．有害度を段階付けした応答を
+//!   与えれば，判定器の一致・不一致を最も明瞭に露わにできる．生成モードと `--responses` は排他である．
+//!
+//! 生成モードの経路:
 //!
 //!   1. StrongREJECT small を先頭 N 件だけ読む．
 //!   2. LIVE gpt-oss（Ollama の OpenAI 互換面）で各 Case の応答を生成する（温度 0）．
@@ -18,20 +28,26 @@
 //!      [`expected_score`] で連続スコアに写す．
 //!   5. 1 Case = 1 Trial に 3 測定を積み，[`strongreject_score_concordance`] で Kendall W を出す．
 //!
-//! **LLM 呼び出しは 1 Case あたり ~3 回**（生成 1 + rubric v1/v2 の 2）．fine-tuned は全 Case を
-//! まとめた sidecar 1 回である．
+//! 応答モードは上記の 2（生成）だけを飛ばし，3〜5 をそのまま共有する．**rubric 判定にはなお gpt-oss が
+//! 必要**なため，`--model` / `--ollama-base` / `--api-key` からプロバイダは同様に構築する（省くのは応答生成
+//! のみである）．
+//!
+//! **生成モードの LLM 呼び出しは 1 Case あたり ~3 回**（生成 1 + rubric v1/v2 の 2），応答モードは ~2 回
+//! （rubric v1/v2 のみ）．fine-tuned はいずれも全 Case をまとめた sidecar 1 回である．
 //!
 //! 頑健性: ある Case の生成・判定が失敗しても，その判定器の [`Measurement`] を `Undecidable` に落として
 //! 継続する（§3.6 / §5.3）．run 全体は決して中断しない．gpt-oss は有害プロンプトを高頻度で拒否する
 //! ため，スコアの散らばりが狭く W が退化しやすい点は**正直な実データの帰結**である．
 
-use std::path::Path;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use serde_json::json;
 
 use pil_core::{
-    AttackRef, InstrumentRef, Measurement, ModelRef, Response, Trial, UndecidableReason, Verdict,
+    AttackRef, Case, EnvKind, FinishReason, InstrumentRef, Measurement, ModelRef, Response,
+    SourceRef, Trial, UndecidableReason, Verdict,
 };
 use pil_llm::backends::openai::OpenAiProvider;
 use pil_llm::{GenerateRequest, LlmConfig, LlmProvider};
@@ -41,7 +57,7 @@ use pil_metrics::instrument::{
 };
 
 use crate::commands::strongreject_judge::{
-    finetuned_instrument_ref, score_batch, score_dist_script, serialize_dist,
+    finetuned_instrument_ref, score_batch, score_dist_script, serialize_dist, JudgeItem,
 };
 use crate::commands::{make_results_dir, write_text, Provenance};
 use crate::suite::load_bench;
@@ -49,7 +65,14 @@ use crate::suite::load_bench;
 /// `pil strongreject-concordance` の引数（DESIGN §3.7 / §10）．
 #[derive(Debug, clap::Args)]
 pub struct StrongrejectConcordanceArgs {
-    /// StrongREJECT small の先頭からの件数上限（判定対象 Case 数）．
+    /// 外部供給の `{"forbidden_prompt","response"}` 配列 JSON（`strongreject-judge --input` と同形）．
+    ///
+    /// 指定すると**応答モード**になり，生成を行わず供給済み応答をそのまま 3 判定器に当てる（§3.7）．
+    /// このとき `--limit` / `--attack` / `--model` の生成用途は使われない（rubric 判定には `--model` の
+    /// gpt-oss をなお使う）．未指定なら従来どおり生成モードで動く．
+    #[arg(long)]
+    pub responses: Option<PathBuf>,
+    /// StrongREJECT small の先頭からの件数上限（判定対象 Case 数．生成モードのみ）．
     #[arg(long, default_value_t = 10)]
     pub limit: usize,
     /// 生成 + rubric 判定に使う LIVE モデルタグ（Ollama のモデル名）．
@@ -193,10 +216,80 @@ impl LiveJudge<'_> {
             Err(e) => undecidable_provider(inst, e.to_string()),
         }
     }
+
+    /// rubric v1 / v2 をまとめて LIVE 判定する（生成・応答モード双方が共有する）．
+    ///
+    /// 判定は常に元の goal（`prompt`）で行う．`gen_ok=false`（生成失敗）なら両者 Undecidable．
+    /// 応答モードでは供給済み応答があるため `gen_ok=true` 固定で呼ぶ．
+    async fn rubric_pair(
+        &self,
+        prompt: &str,
+        response_text: &str,
+        v1_ref: &InstrumentRef,
+        v2_ref: &InstrumentRef,
+        gen_ok: bool,
+    ) -> (Measurement, Measurement) {
+        let v1 = self
+            .rubric(RubricVersion::V1, prompt, response_text, v1_ref, gen_ok)
+            .await;
+        let v2 = self
+            .rubric(RubricVersion::V2, prompt, response_text, v2_ref, gen_ok)
+            .await;
+        (v1, v2)
+    }
 }
 
-/// `pil strongreject-concordance` の本体（非同期）．
+/// LIVE gpt-oss プロバイダと，rubric judge の同一性参照（v1 / v2）をまとめて構築する．
+///
+/// 生成モデル = rubric judge モデル（同じ gpt-oss）．生成・応答モードのどちらも同じ経路で構築する
+/// （応答モードでも rubric 判定には gpt-oss がなお必要）．プロバイダは呼び出し側が所有し，[`LiveJudge`]
+/// はそれを借用する．
+fn build_provider(
+    args: &StrongrejectConcordanceArgs,
+) -> (OpenAiProvider, ModelRef, InstrumentRef, InstrumentRef) {
+    let provider = OpenAiProvider::new(args.ollama_base.clone(), args.api_key.clone())
+        .with_model_override(args.model.clone());
+    // 生成モデル = rubric judge モデル（同じ gpt-oss）．endpoint も監査用に刻む．
+    let gen_model = ModelRef::new("openai", args.model.clone(), Some(args.ollama_base.clone()));
+    let v1_ref = rubric_reference(RubricVersion::V1, gen_model.clone());
+    let v2_ref = rubric_reference(RubricVersion::V2, gen_model.clone());
+    (provider, gen_model, v1_ref, v2_ref)
+}
+
+/// 応答モードの synthetic `Case` を組む（`strongreject-judge` の Case 構築を mirror する）．
+///
+/// SourceRef は入力ファイルパスを `path`，入力 index を `row` に置いた便宜キー．env は `StaticPrompt`，
+/// `benign=false` / `target=None` / `context=None`．
+fn synthetic_case(responses_path: &Path, index: usize, forbidden_prompt: &str) -> Case {
+    let source = SourceRef::new(
+        "pil-cli/strongreject-concordance",
+        "local",
+        responses_path.to_string_lossy(),
+        index,
+    );
+    Case::new(
+        source,
+        forbidden_prompt.to_string(),
+        None,
+        None,
+        EnvKind::StaticPrompt,
+        false,
+        BTreeMap::new(),
+    )
+}
+
+/// `pil strongreject-concordance` の本体（非同期）．`--responses` の有無でモードを分岐する．
 pub async fn run(repo_root: &Path, args: &StrongrejectConcordanceArgs) -> Result<()> {
+    match &args.responses {
+        // 応答モード: 外部供給の応答を判定する（生成なし）．
+        Some(path) => run_responses(repo_root, args, path).await,
+        // 生成モード（既定）: StrongREJECT small を生成してから判定する．
+        None => run_generation(repo_root, args).await,
+    }
+}
+
+/// 生成モード（既定）: StrongREJECT small を LIVE 生成してから 3 判定器を当てる．
+async fn run_generation(repo_root: &Path, args: &StrongrejectConcordanceArgs) -> Result<()> {
     // 1. StrongREJECT small を先頭 N 件だけ読む．
     let mut cases = load_bench("strongreject_small", repo_root)
         .context("StrongREJECT small の読み込みに失敗しました")?;
@@ -207,12 +300,7 @@ pub async fn run(repo_root: &Path, args: &StrongrejectConcordanceArgs) -> Result
     let n = cases.len();
 
     // 2. 単一プロバイダ（LIVE gpt-oss．生成と rubric 判定の両方に使う）．
-    let provider = OpenAiProvider::new(args.ollama_base.clone(), args.api_key.clone())
-        .with_model_override(args.model.clone());
-    // 生成モデル = rubric judge モデル（同じ gpt-oss）．endpoint も監査用に刻む．
-    let gen_model = ModelRef::new("openai", args.model.clone(), Some(args.ollama_base.clone()));
-    let v1_ref = rubric_reference(RubricVersion::V1, gen_model.clone());
-    let v2_ref = rubric_reference(RubricVersion::V2, gen_model.clone());
+    let (provider, gen_model, v1_ref, v2_ref) = build_provider(args);
     let judge = LiveJudge {
         provider: &provider,
         gen_model: &gen_model,
@@ -243,23 +331,8 @@ pub async fn run(repo_root: &Path, args: &StrongrejectConcordanceArgs) -> Result
         }
 
         // b/c. rubric v1 / v2 を LIVE 判定する（生成失敗時は Undecidable）．
-        let v1 = judge
-            .rubric(
-                RubricVersion::V1,
-                &case.prompt,
-                &response.text,
-                &v1_ref,
-                gen_ok,
-            )
-            .await;
-        let v2 = judge
-            .rubric(
-                RubricVersion::V2,
-                &case.prompt,
-                &response.text,
-                &v2_ref,
-                gen_ok,
-            )
+        let (v1, v2) = judge
+            .rubric_pair(&case.prompt, &response.text, &v1_ref, &v2_ref, gen_ok)
             .await;
 
         eprintln!(
@@ -278,57 +351,150 @@ pub async fn run(repo_root: &Path, args: &StrongrejectConcordanceArgs) -> Result
         });
     }
 
-    // 4. fine-tuned（batch）: sidecar を 1 回だけ回す．失敗しても全 ft を Undecidable にして継続する．
-    let ft_ref = finetuned_instrument_ref();
-    let script = score_dist_script(repo_root);
-    let pairs: Vec<(String, String)> = runs
-        .iter()
-        .map(|r| (r.case.prompt.clone(), r.response.text.clone()))
-        .collect();
-    let ft_measures: Vec<Measurement> = if !script.is_file() {
-        eprintln!(
-            "score_dist.py が見つかりません（{}）．fine-tuned は全件 Undecidable として継続します",
-            script.display()
-        );
-        runs.iter()
-            .map(|_| undecidable_provider(&ft_ref, "score_dist.py not found".to_string()))
-            .collect()
-    } else {
-        match score_batch(&args.python, &script, &pairs) {
-            Ok(dists) if dists.len() == runs.len() => runs
-                .iter()
-                .zip(dists.iter())
-                .map(|(r, dist)| ft_measurement(r, dist, &ft_ref, args.threshold))
-                .collect(),
-            Ok(dists) => {
-                eprintln!(
-                    "sidecar 出力件数が不一致（入力 {}, 出力 {}）．fine-tuned は全件 Undecidable として継続します",
-                    runs.len(),
-                    dists.len()
-                );
-                runs.iter()
-                    .map(|_| undecidable_provider(&ft_ref, "sidecar length mismatch".to_string()))
-                    .collect()
-            }
-            Err(e) => {
-                eprintln!(
-                    "fine-tuned sidecar 失敗（{e:#}）．fine-tuned は全件 Undecidable として継続します"
-                );
-                runs.iter()
-                    .map(|_| undecidable_provider(&ft_ref, format!("sidecar error: {e}")))
-                    .collect()
-            }
-        }
+    // 4-7. fine-tuned batch → Trial 構築 → run dir → concordance 印字（応答モードと共有）．
+    let mut meta = serde_json::Map::new();
+    meta.insert("mode".into(), json!("strongreject-concordance"));
+    meta.insert("bench".into(), json!("strongreject_small"));
+    meta.insert("limit".into(), json!(args.limit));
+    meta.insert("n_gen_failed".into(), json!(n_gen_failed));
+    meta.insert("model".into(), json!(args.model));
+    meta.insert("ollama_base".into(), json!(args.ollama_base));
+    meta.insert("max_tokens".into(), json!(args.max_tokens));
+    meta.insert("attack".into(), json!(args.attack));
+    let subheader = format!(
+        "生成 attack = {}（判定はいずれも元の goal で実施）",
+        args.attack
+    );
+    finalize(
+        repo_root,
+        args,
+        runs,
+        &gen_model,
+        &attack_ref,
+        &subheader,
+        meta,
+    )
+}
+
+/// 応答モード（`--responses`）: 外部供給の `{forbidden_prompt, response}` を判定する（生成なし）．
+///
+/// 生成を飛ばすだけで，rubric 判定にはなお gpt-oss を使い，fine-tuned・Trial 構築・run dir・concordance
+/// 印字は生成モードとすべて共有する（§3.7）．供給応答の有害度に幅があれば，スコアはレンジを持つ．
+async fn run_responses(
+    repo_root: &Path,
+    args: &StrongrejectConcordanceArgs,
+    path: &Path,
+) -> Result<()> {
+    // 1. 外部供給の応答ペアを読む（`strongreject-judge --input` と同形）．
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("--responses を読めません: {}", path.display()))?;
+    let items: Vec<JudgeItem> = serde_json::from_str(&raw).with_context(|| {
+        format!(
+            "--responses JSON（`[{{\"forbidden_prompt\",\"response\"}}, ...]`）の解釈に失敗しました: {}",
+            path.display()
+        )
+    })?;
+    if items.is_empty() {
+        bail!("--responses が空です: {}", path.display());
+    }
+    let n = items.len();
+
+    // 2. rubric 判定用プロバイダ（gpt-oss）．生成はしないが rubric にはなお LLM が要る．
+    let (provider, gen_model, v1_ref, v2_ref) = build_provider(args);
+    let judge = LiveJudge {
+        provider: &provider,
+        gen_model: &gen_model,
+        max_tokens: args.max_tokens,
     };
+    // 応答は外部供給のため Trial の model は external/supplied，attack は identity とする．
+    let response_model = ModelRef::new("external", "supplied", None);
+    let attack_ref = AttackRef::identity();
+
+    eprintln!(
+        "strongreject-concordance (responses): pairs={n} judge_model={} base={} （生成なし，rubric 判定は 1 pair あたり ~2 回）",
+        args.model, args.ollama_base
+    );
+
+    // 3. 各ペアを synthetic Case + 供給応答に組み，rubric v1 / v2 を LIVE 判定する（生成は常に成功扱い）．
+    let mut runs: Vec<CaseRun> = Vec::with_capacity(n);
+    for (i, item) in items.iter().enumerate() {
+        let case = synthetic_case(path, i, &item.forbidden_prompt);
+        let response = Response {
+            text: item.response.clone(),
+            finish_reason: FinishReason::Stop,
+            prompt_tokens: None,
+            completion_tokens: None,
+            reached_clip_limit: false,
+        };
+        // 供給応答があるため gen_ok=true 固定（生成は行わない）．
+        let (v1, v2) = judge
+            .rubric_pair(&case.prompt, &response.text, &v1_ref, &v2_ref, true)
+            .await;
+
+        eprintln!(
+            "[{}/{n}] {} | v1={} v2={}",
+            i + 1,
+            case.id.short(),
+            verdict_label(&v1.verdict),
+            verdict_label(&v2.verdict),
+        );
+        runs.push(CaseRun {
+            case,
+            response,
+            gen_ok: true,
+            v1,
+            v2,
+        });
+    }
+
+    // 4-7. 生成モードと共有（fine-tuned batch → Trial → run dir → concordance 印字）．
+    let mut meta = serde_json::Map::new();
+    meta.insert("mode".into(), json!("responses"));
+    meta.insert("input".into(), json!(path.to_string_lossy()));
+    meta.insert("n_pairs".into(), json!(n));
+    meta.insert("model".into(), json!(args.model));
+    meta.insert("ollama_base".into(), json!(args.ollama_base));
+    meta.insert("max_tokens".into(), json!(args.max_tokens));
+    let subheader =
+        "入力 = 外部供給の (forbidden_prompt, response) ペア（生成なし，rubric 判定のみ gpt-oss で実施）"
+            .to_string();
+    finalize(
+        repo_root,
+        args,
+        runs,
+        &response_model,
+        &attack_ref,
+        &subheader,
+        meta,
+    )
+}
+
+/// fine-tuned batch → Trial 構築 → run dir 書き出し → concordance 印字（両モード共有の後段）．
+///
+/// `trial_model` / `attack_ref` はモードごとに異なる（生成: gpt-oss + 指定 attack，応答: external/supplied
+/// + identity）．`meta` にはモード固有フィールドが入っており，共通フィールドと concordance をここで足す．
+fn finalize(
+    repo_root: &Path,
+    args: &StrongrejectConcordanceArgs,
+    runs: Vec<CaseRun>,
+    trial_model: &ModelRef,
+    attack_ref: &AttackRef,
+    subheader: &str,
+    mut meta: serde_json::Map<String, serde_json::Value>,
+) -> Result<()> {
+    let n = runs.len();
+
+    // 4. fine-tuned（batch）: sidecar を 1 回だけ回す．失敗しても全 ft を Undecidable にして継続する．
+    let ft_measures = finetune_measurements(repo_root, &args.python, args.threshold, &runs);
 
     // 5. 1 Case = 1 Trial（[v1, v2, ft]）を積む（EnvKind は Case が StaticPrompt を持つ）．
     let mut trials: Vec<Trial> = Vec::with_capacity(n);
-    let mut cases_out: Vec<pil_core::Case> = Vec::with_capacity(n);
+    let mut cases_out: Vec<Case> = Vec::with_capacity(n);
     for (run, ft) in runs.into_iter().zip(ft_measures.into_iter()) {
         trials.push(Trial {
             case: run.case.id.clone(),
             attempt: 1,
-            model: gen_model.clone(),
+            model: trial_model.clone(),
             attack: attack_ref.clone(),
             response: run.response,
             measurements: vec![run.v1, run.v2, ft],
@@ -348,21 +514,14 @@ pub async fn run(repo_root: &Path, args: &StrongrejectConcordanceArgs) -> Result
         .transpose()
         .context("ScoreConcordance の JSON 化に失敗しました")?;
 
-    let meta = json!({
-        "mode": "strongreject-concordance",
-        "env_kind": "StaticPrompt",
-        "bench": "strongreject_small",
-        "limit": args.limit,
-        "n_cases": n,
-        "n_gen_failed": n_gen_failed,
-        "model": args.model,
-        "ollama_base": args.ollama_base,
-        "python": args.python,
-        "threshold": args.threshold,
-        "max_tokens": args.max_tokens,
-        "attack": args.attack,
-        "concordance": concordance_value,
-    });
+    // 共通メタ（両モード）+ concordance を足す．serde_json の Map は key 昇順で直列化される．
+    meta.insert("env_kind".into(), json!("StaticPrompt"));
+    meta.insert("n_cases".into(), json!(n));
+    meta.insert("python".into(), json!(args.python));
+    meta.insert("threshold".into(), json!(args.threshold));
+    // concordance は Option（未定義なら null）．json! で Value に写す（None→null）．
+    meta.insert("concordance".into(), json!(concordance_value));
+    let meta = serde_json::Value::Object(meta);
     write_text(&dir, "run_meta.json", &serde_json::to_string_pretty(&meta)?)?;
     let prov = Provenance::new("strongreject_concordance", None, meta);
     prov.write(&dir)?;
@@ -370,10 +529,7 @@ pub async fn run(repo_root: &Path, args: &StrongrejectConcordanceArgs) -> Result
     // 7. per-case テーブル + Kendall W を印字する．
     println!();
     println!("StrongREJECT 3 判定器 concordance（実データ，DESIGN §3.7）");
-    println!(
-        "生成 attack = {}（判定はいずれも元の goal で実施）",
-        args.attack
-    );
+    println!("{subheader}");
     println!(
         "{:<18}  {:<16}  {:<16}  {:<16}",
         "case", "rubric_v1", "rubric_v2", "fine_tuned"
@@ -417,10 +573,62 @@ pub async fn run(repo_root: &Path, args: &StrongrejectConcordanceArgs) -> Result
         }
     }
     println!(
-        "注記: gpt-oss は有害プロンプトを高頻度で拒否するため，スコアの散らばりが狭く W が退化しやすい（正直な実データ）．--attack で jailbreak を当てても応答の compliance が上がるとは限らない．"
+        "注記: gpt-oss は有害プロンプトを高頻度で拒否するため，スコアの散らばりが狭く W が退化しやすい（正直な実データ）．供給応答の有害度に幅がなければ応答モードでも同様に W は退化する．"
     );
     println!("成果物: {}", dir.display());
     Ok(())
+}
+
+/// fine-tuned judge を sidecar batch で 1 回回し，各 Case の [`Measurement`] を得る（両モード共有）．
+///
+/// script 不在・件数不一致・sidecar 失敗のいずれでも全件 Undecidable に落として継続する（§3.6 / §5.3）．
+fn finetune_measurements(
+    repo_root: &Path,
+    python: &str,
+    threshold: f64,
+    runs: &[CaseRun],
+) -> Vec<Measurement> {
+    let ft_ref = finetuned_instrument_ref();
+    let script = score_dist_script(repo_root);
+    let pairs: Vec<(String, String)> = runs
+        .iter()
+        .map(|r| (r.case.prompt.clone(), r.response.text.clone()))
+        .collect();
+    if !script.is_file() {
+        eprintln!(
+            "score_dist.py が見つかりません（{}）．fine-tuned は全件 Undecidable として継続します",
+            script.display()
+        );
+        return runs
+            .iter()
+            .map(|_| undecidable_provider(&ft_ref, "score_dist.py not found".to_string()))
+            .collect();
+    }
+    match score_batch(python, &script, &pairs) {
+        Ok(dists) if dists.len() == runs.len() => runs
+            .iter()
+            .zip(dists.iter())
+            .map(|(r, dist)| ft_measurement(r, dist, &ft_ref, threshold))
+            .collect(),
+        Ok(dists) => {
+            eprintln!(
+                "sidecar 出力件数が不一致（入力 {}, 出力 {}）．fine-tuned は全件 Undecidable として継続します",
+                runs.len(),
+                dists.len()
+            );
+            runs.iter()
+                .map(|_| undecidable_provider(&ft_ref, "sidecar length mismatch".to_string()))
+                .collect()
+        }
+        Err(e) => {
+            eprintln!(
+                "fine-tuned sidecar 失敗（{e:#}）．fine-tuned は全件 Undecidable として継続します"
+            );
+            runs.iter()
+                .map(|_| undecidable_provider(&ft_ref, format!("sidecar error: {e}")))
+                .collect()
+        }
+    }
 }
 
 /// fine-tuned の採点分布 1 件を Measurement に写す（生成失敗 Case は Undecidable）．
@@ -494,8 +702,28 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_attack;
-    use pil_core::Transform;
+    use super::{resolve_attack, synthetic_case};
+    use pil_core::{EnvKind, Transform};
+    use std::path::Path;
+
+    /// 応答モードの synthetic Case は StaticPrompt・非 benign・prompt=forbidden_prompt で組まれ，
+    /// SourceRef は入力パス + index キーを携える（`strongreject-judge` の Case 構築を mirror）．
+    #[test]
+    fn synthetic_case_mirrors_judge_shape() {
+        let path = Path::new("/tmp/graded.json");
+        let case = synthetic_case(path, 3, "how to do X");
+        assert_eq!(case.prompt, "how to do X");
+        assert_eq!(case.env_kind, EnvKind::StaticPrompt);
+        assert!(!case.benign);
+        assert!(case.target.is_none());
+        assert!(case.context.is_none());
+        assert_eq!(case.source.path, "/tmp/graded.json");
+        assert_eq!(case.source.row, 3);
+        assert_eq!(case.source.upstream, "pil-cli/strongreject-concordance");
+        // 別 index は別 SourceRef → 別 CaseId（同一 prompt でも出自で分かれる，§3.3）．
+        let other = synthetic_case(path, 4, "how to do X");
+        assert_ne!(case.id, other.id);
+    }
 
     /// `--attack` の各有効名が期待どおりの `Transform` へ解決される（純粋・network-free）．
     #[test]
